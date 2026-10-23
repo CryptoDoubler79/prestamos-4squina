@@ -101,12 +101,16 @@ function toast(msg) { const t = document.createElement('div'); t.className = 'to
 function errMsg(e) {
   const c = e && e.code || '';
   if (c.includes('permission-denied')) return 'Sin permiso para esta acción.';
-  if (c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found')) return 'Correo o contraseña incorrectos.';
-  if (c.includes('email-already-in-use')) return 'Ese correo ya tiene cuenta.';
-  if (c.includes('weak-password')) return 'La contraseña debe tener al menos 6 caracteres.';
+  if (c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found') || c.includes('invalid-email')) return 'Código incorrecto.';
+  if (c.includes('email-already-in-use')) return 'Ese código ya está en uso. Elige otro.';
+  if (c.includes('too-many-requests')) return 'Demasiados intentos. Espera unos minutos.';
   if (c.includes('unavailable')) return 'Sin conexión. Intenta de nuevo cuando tengas internet.';
   return e && e.message || 'Error';
 }
+// Acceso por código: cada código se convierte internamente en una cuenta
+const validCode = c => /^[0-9]{6,10}$/.test(c);
+const codeEmail = c => `c${c}@squina-prestamos.app`;
+const codePass = c => `4sq#${c}#prestamos`;
 function openModal(html) {
   const root = $('#modalRoot');
   root.innerHTML = `<div class="modal"><div class="sheet"><button class="x" data-close>×</button>${html}</div></div>`;
@@ -180,14 +184,19 @@ function showLogin(mode = 'login') {
     <div class="card">
       ${first ? `<p class="mute">Crea la cuenta del dueño. Solo se puede hacer una vez; la primera cuenta creada será el administrador principal.</p>
       <label>Tu nombre</label><input id="lname" autocomplete="name">` : ''}
-      <label>Correo</label><input id="lemail" type="email" autocomplete="username">
-      <label>Contraseña</label><input id="lpass" type="password" autocomplete="${first ? 'new-password' : 'current-password'}">
+      <label>${first ? 'Elige tu código (6 a 10 números)' : 'Código de acceso'}</label>
+      <input id="lcode" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="10" autocomplete="off" style="font-size:24px;letter-spacing:6px;text-align:center">
+      ${first ? `<label>Repite el código</label><input id="lcode2" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="10" autocomplete="off" style="font-size:24px;letter-spacing:6px;text-align:center">` : ''}
       <button class="btn" id="lgo">${first ? 'Crear cuenta de dueño' : 'Entrar'}</button>
       <p class="center mute" style="margin-top:14px"><a href="#" id="lswitch">${first ? 'Ya tengo cuenta' : 'Primera vez: crear cuenta de dueño'}</a></p>
     </div></div>`;
+  $('#lcode').onkeydown = e => { if (e.key === 'Enter' && !first) $('#lgo').click(); };
   $('#lswitch').onclick = e => { e.preventDefault(); showLogin(first ? 'login' : 'owner'); };
   $('#lgo').onclick = async () => {
-    const email = $('#lemail').value.trim(), pass = $('#lpass').value;
+    const code = $('#lcode').value.trim();
+    if (!validCode(code)) return alert('El código debe tener de 6 a 10 números.');
+    if (first && code !== $('#lcode2').value.trim()) return alert('Los códigos no coinciden.');
+    const email = codeEmail(code), pass = codePass(code);
     $('#lgo').disabled = true;
     try {
       if (!first) { await signInWithEmailAndPassword(auth, email, pass); return; }
@@ -627,14 +636,13 @@ async function viewEquipo() {
   await loadUsers();
   view.innerHTML = `<h2>Equipo</h2>
     <div class="card">${usersCache.map(u => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
-      <div><b>${esc(u.name)}</b><div class="mute">${esc(u.email)} · ${u.role === 'admin' ? 'Administrador' : 'Cobrador'}${u.active === false ? ' · <span style="color:var(--red)">desactivado</span>' : ''}</div></div>
+      <div><b>${esc(u.name)}</b><div class="mute">${u.role === 'admin' ? 'Administrador' : 'Cobrador'}${u.active === false ? ' · <span style="color:var(--red)">desactivado</span>' : ''}</div></div>
       ${u.id !== me.uid ? `<button class="btn sm sec" data-tog="${u.id}">${u.active === false ? 'Activar' : 'Desactivar'}</button>` : '<span class="mute">Tú</span>'}
     </div>`).join('')}</div>
     <h3>Agregar persona</h3>
     <div class="card">
       <label>Nombre</label><input id="un">
-      <label>Correo</label><input id="ue" type="email">
-      <label>Contraseña (mín. 6)</label><input id="up" type="text">
+      <label>Código de acceso (6 a 10 números)</label><input id="up" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="10" autocomplete="off">
       <label>Rol</label><select id="ur"><option value="cobrador">Cobrador (solo ve sus clientes)</option><option value="admin">Administrador (ve todo)</option></select>
       <button class="btn" id="uadd">Crear cuenta</button>
     </div>
@@ -647,14 +655,16 @@ async function viewEquipo() {
     toast('Actualizado'); viewEquipo();
   });
   $('#uadd').onclick = async () => {
-    const name = $('#un').value.trim(), email = $('#ue').value.trim(), pass = $('#up').value, role = $('#ur').value;
-    if (!name || !email || pass.length < 6) return toast('Completa nombre, correo y contraseña (6+)');
+    const name = $('#un').value.trim(), code = $('#up').value.trim(), role = $('#ur').value;
+    if (!name) return toast('Escribe el nombre');
+    if (!validCode(code)) return toast('El código debe tener de 6 a 10 números');
+    const email = codeEmail(code);
     $('#uadd').disabled = true;
     try {
-      const cred = await createUserWithEmailAndPassword(auth2, email, pass);
+      const cred = await createUserWithEmailAndPassword(auth2, email, codePass(code));
       await setDoc(doc(db, 'users', cred.user.uid), { name, email, role, active: true, createdAt: serverTimestamp() });
       await signOut(auth2);
-      toast(`Cuenta creada. Entra con ${email}`); viewEquipo();
+      toast(`Cuenta creada. ${name} entra con su código.`); viewEquipo();
     } catch (e) { toast(errMsg(e)); $('#uadd').disabled = false; }
   };
   $('#bsave').onclick = async () => {
