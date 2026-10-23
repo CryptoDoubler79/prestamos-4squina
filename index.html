@@ -70,10 +70,16 @@ pre.receipt{background:#fff;border:1px solid var(--line);border-radius:10px;padd
 <nav id="nav" hidden></nav>
 <div id="modalRoot"></div>
 
+<script>
+window.__diag=function(m){var v=document.getElementById('view');if(v)v.innerHTML='<div class="card"><b>Problema al cargar</b><p>'+String(m).replace(/</g,'&lt;')+'</p><button class="btn" onclick="location.reload()">Reintentar</button></div>'};
+window.addEventListener('error',function(e){if(!window.__ok)__diag('Error: '+(e.message||((e.target&&(e.target.src||e.target.href))?'no cargó '+(e.target.src||e.target.href):e.type)))},true);
+window.addEventListener('unhandledrejection',function(e){if(!window.__ok)__diag('Error: '+(e.reason&&(e.reason.code||e.reason.message)||e.reason))});
+setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+window.__stage):'La app no pudo descargar sus archivos. Revisa el internet, o abre el enlace en Safari/Chrome (no dentro de otra app).')},15000);
+</script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { r2, todayStr, daysBetween, loanStatus, applyPayment } from "./loancalc.js";
 
 const firebaseConfig = {
@@ -86,7 +92,12 @@ const firebaseConfig = {
 };
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+window.__stage = 'iniciar base de datos';
+let db;
+try { db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) }); }
+catch (e) { db = getFirestore(app); }
+const withTimeout = (p, ms = 12000) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej({ code: 'timeout', message: 'No se pudo conectar con la base de datos de Firebase. Revisa que la base de datos Firestore esté creada.' }), ms))]);
+window.__stage = 'esperando la sesión';
 // App secundaria para crear cobradores sin cerrar la sesión del admin
 const app2 = initializeApp(firebaseConfig, "secundaria");
 const auth2 = getAuth(app2);
@@ -157,6 +168,7 @@ const collectorName = id => (usersCache.find(u => u.id === id) || {}).name || (i
 // ---------- autenticación ----------
 let creatingOwner = false;
 function showFatal(msg) {
+  window.__ok = true;
   $('#hdr').hidden = true; $('#nav').hidden = true;
   view.innerHTML = `<div class="login card center"><p>${msg}</p><button class="btn" id="out">Volver al inicio</button></div>`;
   $('#out').onclick = () => signOut(auth).then(() => showLogin());
@@ -168,7 +180,8 @@ onAuthStateChanged(auth, async u => {
   if (creatingOwner) return;
   if (!u) { me = null; showLogin(); return; }
   try {
-    const [ownSnap, userSnap] = await Promise.all([getDoc(doc(db, 'meta', 'owner')), getDoc(doc(db, 'users', u.uid))]);
+    window.__stage = 'leer la base de datos';
+    const [ownSnap, userSnap] = await withTimeout(Promise.all([getDoc(doc(db, 'meta', 'owner')), getDoc(doc(db, 'users', u.uid))]));
     const owner = ownSnap.exists() && ownSnap.data().uid === u.uid;
     let ud = userSnap.exists() ? userSnap.data() : null;
     if (owner && !ud) {
@@ -184,6 +197,7 @@ onAuthStateChanged(auth, async u => {
 });
 
 function showLogin(mode = 'login') {
+  window.__ok = true;
   $('#hdr').hidden = true; $('#nav').hidden = true;
   const first = mode === 'owner';
   view.innerHTML = `<div class="login">
@@ -236,6 +250,7 @@ $('#logout').onclick = () => { if (confirm('¿Cerrar sesión?')) signOut(auth); 
 
 // ---------- navegación ----------
 function startApp() {
+  window.__ok = true;
   $('#hdr').hidden = false; $('#nav').hidden = false;
   $('#bizName').textContent = settings.businessName;
   $('#whoami').textContent = `${me.name} · ${isAdmin() ? 'Administrador' : 'Cobrador'}`;
