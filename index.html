@@ -155,7 +155,17 @@ async function loadUsers() {
 const collectorName = id => (usersCache.find(u => u.id === id) || {}).name || (id === me.uid ? me.name : '—');
 
 // ---------- autenticación ----------
+let creatingOwner = false;
+function showFatal(msg) {
+  $('#hdr').hidden = true; $('#nav').hidden = true;
+  view.innerHTML = `<div class="login card center"><p>${msg}</p><button class="btn" id="out">Volver al inicio</button></div>`;
+  $('#out').onclick = () => signOut(auth).then(() => showLogin());
+}
+const setupHint = e => (e && e.code || '').includes('permission-denied')
+  ? 'Firebase bloqueó el acceso: las reglas de seguridad no están publicadas. Ve a Firestore Database → Reglas, pega las reglas y toca Publicar.'
+  : 'Error: ' + esc(errMsg(e));
 onAuthStateChanged(auth, async u => {
+  if (creatingOwner) return;
   if (!u) { me = null; showLogin(); return; }
   try {
     const [ownSnap, userSnap] = await Promise.all([getDoc(doc(db, 'meta', 'owner')), getDoc(doc(db, 'users', u.uid))]);
@@ -165,16 +175,12 @@ onAuthStateChanged(auth, async u => {
       ud = { name: 'Dueño', email: u.email, role: 'admin', active: true, createdAt: serverTimestamp() };
       await setDoc(doc(db, 'users', u.uid), ud);
     }
-    if (!ud || ud.active === false) {
-      view.innerHTML = `<div class="login card center"><p>Esta cuenta no tiene acceso. Pide al administrador que la active.</p><button class="btn" id="out">Salir</button></div>`;
-      $('#out').onclick = () => signOut(auth);
-      return;
-    }
+    if (!ud || ud.active === false) return showFatal('Esta cuenta no tiene acceso. Pide al administrador que la active.');
     me = { uid: u.uid, email: u.email, name: ud.name, role: ud.role, owner };
     try { const s = await getDoc(doc(db, 'meta', 'settings')); if (s.exists()) settings = { ...settings, ...s.data() }; } catch (_) {}
     await loadUsers();
     startApp();
-  } catch (e) { view.innerHTML = `<div class="card">Error: ${esc(errMsg(e))}</div>`; }
+  } catch (e) { showFatal(setupHint(e)); }
 });
 
 function showLogin(mode = 'login') {
@@ -199,20 +205,31 @@ function showLogin(mode = 'login') {
     if (!validCode(code)) return alert('El código debe tener de 6 a 10 números.');
     if (first && code !== $('#lcode2').value.trim()) return alert('Los códigos no coinciden.');
     const email = codeEmail(code), pass = codePass(code);
-    $('#lgo').disabled = true;
+    const name = first ? ($('#lname').value.trim() || 'Dueño') : '';
+    $('#lgo').disabled = true; $('#lgo').textContent = 'Un momento…';
     try {
       if (!first) { await signInWithEmailAndPassword(auth, email, pass); return; }
+      creatingOwner = true;
       const cred = await createUserWithEmailAndPassword(auth, email, pass);
       try {
+        const own = await getDoc(doc(db, 'meta', 'owner'));
+        if (own.exists()) {
+          await cred.user.delete().catch(() => {});
+          creatingOwner = false;
+          alert('Ya existe un dueño registrado. Entra con tu código o pide al dueño que te cree una cuenta.');
+          return showLogin();
+        }
         await setDoc(doc(db, 'meta', 'owner'), { uid: cred.user.uid, createdAt: serverTimestamp() });
-        await setDoc(doc(db, 'users', cred.user.uid), { name: $('#lname').value.trim() || 'Dueño', email, role: 'admin', active: true, createdAt: serverTimestamp() });
+        await setDoc(doc(db, 'users', cred.user.uid), { name, email, role: 'admin', active: true, createdAt: serverTimestamp() });
         location.reload();
       } catch (e) {
         await cred.user.delete().catch(() => {});
-        alert('Ya existe un dueño registrado. Pide al dueño que te cree una cuenta.');
+        creatingOwner = false;
+        alert(setupHint(e));
+        showLogin('owner');
       }
-    } catch (e) { alert(errMsg(e)); }
-    finally { const b = $('#lgo'); if (b) b.disabled = false; }
+    } catch (e) { creatingOwner = false; alert(errMsg(e)); }
+    finally { const b = $('#lgo'); if (b) { b.disabled = false; b.textContent = first ? 'Crear cuenta de dueño' : 'Entrar'; } }
   };
 }
 $('#logout').onclick = () => { if (confirm('¿Cerrar sesión?')) signOut(auth); };
