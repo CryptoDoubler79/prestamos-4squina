@@ -79,8 +79,8 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, loanStatus, applyPayment } from "./loancalc.js";
+import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { r2, todayStr, daysBetween, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS } from "./loancalc.js?v=2";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -156,6 +156,9 @@ const qPaysFrom = d => query(collection(db, 'payments'), where('date', '>=', d))
 const qPaysByLoan = lid => isAdmin()
   ? query(collection(db, 'payments'), where('loanId', '==', lid))
   : query(collection(db, 'payments'), where('collectorId', '==', me.uid), where('loanId', '==', lid));
+const qMovesByDate = d => isAdmin()
+  ? query(collection(db, 'cashmoves'), where('date', '==', d))
+  : query(collection(db, 'cashmoves'), where('uid', '==', me.uid), where('date', '==', d));
 const rows = snap => snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
 async function loadUsers() {
@@ -263,8 +266,8 @@ function startApp() {
   $('#hdr').hidden = false; $('#nav').hidden = false;
   $('#bizName').textContent = settings.businessName;
   $('#whoami').textContent = `${me.name} · ${isAdmin() ? 'Administrador' : 'Cobrador'}`;
-  const tabs = [['inicio', '🏠', 'Inicio'], ['cobros', '💵', 'Cobros'], ['clientes', '👥', 'Clientes'], ['cuadre', '🧾', 'Cuadre']];
-  if (isAdmin()) tabs.push(['equipo', '⚙️', 'Equipo']);
+  const tabs = [['inicio', '🏠', 'Inicio'], ['cobros', '💵', 'Cobros'], ['clientes', '👥', 'Clientes'], ['caja', '🧾', 'Caja']];
+  if (isAdmin()) tabs.push(['mas', '☰', 'Más']);
   $('#nav').innerHTML = tabs.map(([k, i, t]) => `<button data-tab="${k}"><b>${i}</b>${t}</button>`).join('');
   $('#nav').querySelectorAll('button').forEach(b => b.onclick = () => go(b.dataset.tab));
   go(tab);
@@ -273,11 +276,65 @@ function go(t) {
   tab = t;
   $('#nav').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   view.innerHTML = '<div class="empty">Cargando…</div>';
-  ({ inicio: viewInicio, cobros: viewCobros, clientes: viewClientes, cuadre: viewCuadre, equipo: viewEquipo })[t]()
+  ({ inicio: viewInicio, cobros: viewCobros, clientes: viewClientes, caja: () => viewCaja(), mas: viewMas })[t]()
     .catch(e => view.innerHTML = `<div class="card">Error: ${esc(errMsg(e))}</div>`);
   window.scrollTo(0, 0);
 }
 const refresh = () => go(tab);
+
+// ---------- utilidades extra ----------
+const typeLabel = L => L.type === 'cuotas'
+  ? `${L.n} cuotas ${(FREQ[L.freq] || '').toLowerCase()}es de ${money(L.schedule && L.schedule[0] ? L.schedule[0].amount : 0)}`
+  : `Réditos ${pct(L.rateWeekly)} semanal`;
+const METHODS = { efectivo: 'Efectivo', transferencia: 'Transferencia', otro: 'Otro' };
+const waLink = (phone, text) => {
+  const p = String(phone || '').replace(/\D/g, '');
+  return `https://wa.me/${p ? (p.length === 10 ? '1' + p : p) : ''}?text=${encodeURIComponent(text)}`;
+};
+function printHtml(title, body) {
+  const w = window.open('', '_blank');
+  if (!w) return toast('Permite ventanas emergentes para imprimir');
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
+  <style>body{font:14px/1.5 Georgia,serif;max-width:720px;margin:24px auto;padding:0 16px;color:#111}h1{font-size:18px;text-align:center}table{width:100%;border-collapse:collapse;font:12px Arial,sans-serif}td,th{border:1px solid #999;padding:4px}.sig{display:flex;gap:30px;margin-top:50px}.sig div{flex:1;border-top:1px solid #000;text-align:center;padding-top:4px;font-size:12px}pre{white-space:pre-wrap;font:13px monospace}@media print{button{display:none}}</style>
+  </head><body><button onclick="print()" style="padding:10px 16px;margin-bottom:10px">Imprimir / Guardar PDF</button>${body}</body></html>`);
+  w.document.close();
+}
+function downloadCsv(name, header, data) {
+  const cell = v => { const s = String(v ?? ''); return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const csv = '﻿' + [header, ...data].map(r => r.map(cell).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = name; document.body.appendChild(a); a.click(); a.remove();
+}
+// Foto: se reduce y se guarda dentro de la base de datos (gratis, sin Storage)
+function pickPhoto() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*'; inp.setAttribute('capture', 'environment');
+    inp.onchange = () => {
+      const f = inp.files && inp.files[0]; if (!f) return resolve(null);
+      const img = new Image();
+      img.onload = () => {
+        const max = 640, k = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.6)); URL.revokeObjectURL(img.src);
+      };
+      img.onerror = () => resolve(null);
+      img.src = URL.createObjectURL(f);
+    };
+    inp.click();
+  });
+}
+async function savePhoto(id, data, collectorId, kind) {
+  await setDoc(doc(db, 'photos', id), { data, collectorId: collectorId || '', kind, createdAt: serverTimestamp() });
+}
+async function loadPhoto(id) {
+  try { const s = await getDoc(doc(db, 'photos', id)); return s.exists() ? s.data().data : null; } catch (_) { return null; }
+}
+async function cashMove(m) {
+  await addDoc(collection(db, 'cashmoves'), { date: todayStr(), byUid: me.uid, byName: me.name, createdAt: serverTimestamp(), note: '', ...m });
+}
 
 // ---------- INICIO ----------
 async function viewInicio() {
@@ -285,39 +342,45 @@ async function viewInicio() {
   const monthStart = today.slice(0, 8) + '01';
   const loans = rows(await getDocs(qLoansActive()));
   const paysToday = rows(await getDocs(qPaysByDate(today))).filter(p => !p.anulado);
-  let paysMonth = [];
-  if (isAdmin()) paysMonth = rows(await getDocs(qPaysFrom(monthStart))).filter(p => !p.anulado);
-
-  let capital = 0, intPend = 0, late = 0;
-  loans.forEach(L => { const s = loanStatus(L, today); capital += s.capital; intPend += s.interestDue; if (s.late) late++; });
+  let paysMonth = [], movesMonth = [];
+  if (isAdmin()) {
+    paysMonth = rows(await getDocs(qPaysFrom(monthStart))).filter(p => !p.anulado);
+    movesMonth = rows(await getDocs(query(collection(db, 'cashmoves'), where('date', '>=', monthStart))));
+  }
+  let capital = 0, pend = 0, late = 0, dueToday = 0;
+  loans.forEach(L => {
+    const s = loanStatus(L, today); capital += s.capital; pend += s.dueNow; if (s.late) late++;
+    if (L.type === 'cuotas' ? s.overdueCount > 0 : s.daysSincePay >= 7) dueToday++;
+  });
   const sum = (a, k) => r2(a.reduce((t, p) => t + (p[k] || 0), 0));
-
+  const gastosMes = r2(movesMonth.filter(m => m.type === 'gasto').reduce((t, m) => t + m.amount, 0));
   view.innerHTML = `
     <h2>Hoy, ${fdate(today)}</h2>
     <div class="grid">
       <div class="stat"><span>Cobrado hoy</span><b>${money(sum(paysToday, 'amount'))}</b></div>
       <div class="stat"><span>Pagos hoy</span><b>${paysToday.length}</b></div>
-      <div class="stat"><span>Interés cobrado hoy</span><b>${money(sum(paysToday, 'toInterest'))}</b></div>
-      <div class="stat"><span>Capital cobrado hoy</span><b>${money(sum(paysToday, 'toCapital'))}</b></div>
+      <div class="stat tap" id="goCob"><span>Por cobrar hoy</span><b>${dueToday}</b></div>
+      <div class="stat tap" id="goLate"><span>Atrasados</span><b style="color:${late ? 'var(--red)' : 'inherit'}">${late}</b></div>
     </div>
     <h3>Cartera</h3>
     <div class="grid">
       <div class="stat"><span>Capital en la calle</span><b>${money(capital)}</b></div>
-      <div class="stat"><span>Interés pendiente</span><b>${money(intPend)}</b></div>
+      <div class="stat"><span>Vencido (interés, cuotas, mora)</span><b>${money(pend)}</b></div>
       <div class="stat"><span>Préstamos activos</span><b>${loans.length}</b></div>
-      <div class="stat tap" id="goLate"><span>Atrasados (+7 días)</span><b style="color:${late ? 'var(--red)' : 'inherit'}">${late}</b></div>
+      <div class="stat"><span>Mora cobrada hoy</span><b>${money(sum(paysToday, 'toMora'))}</b></div>
     </div>
     ${isAdmin() ? `<h3>Este mes</h3>
     <div class="grid">
-      <div class="stat"><span>Ganancia (interés)</span><b style="color:var(--green)">${money(sum(paysMonth, 'toInterest'))}</b></div>
+      <div class="stat"><span>Interés + mora cobrados</span><b style="color:var(--green)">${money(sum(paysMonth, 'toInterest') + sum(paysMonth, 'toMora'))}</b></div>
       <div class="stat"><span>Capital recuperado</span><b>${money(sum(paysMonth, 'toCapital'))}</b></div>
+      <div class="stat"><span>Gastos</span><b>${money(gastosMes)}</b></div>
+      <div class="stat"><span>Ganancia neta</span><b style="color:var(--green)">${money(sum(paysMonth, 'toInterest') + sum(paysMonth, 'toMora') - gastosMes)}</b></div>
     </div>` : ''}
     <div class="btns" style="margin-top:16px">
       <button class="btn" id="qCobrar">💵 Cobrar</button>
       ${isAdmin() ? '<button class="btn sec" id="qNuevo">➕ Nuevo préstamo</button>' : ''}
     </div>`;
-  $('#goLate').onclick = () => go('cobros');
-  $('#qCobrar').onclick = () => go('cobros');
+  $('#goLate').onclick = $('#goCob').onclick = $('#qCobrar').onclick = () => go('cobros');
   if ($('#qNuevo')) $('#qNuevo').onclick = () => pickClientForLoan();
 }
 
@@ -325,29 +388,43 @@ async function viewInicio() {
 async function viewCobros() {
   const today = todayStr();
   const loans = rows(await getDocs(qLoansActive())).map(L => ({ ...L, st: loanStatus(L, today) }));
-  loans.sort((a, b) => (b.st.late - a.st.late) || (b.st.daysSincePay - a.st.daysSincePay));
+  loans.sort((a, b) => (b.st.late - a.st.late) || (b.st.daysLate - a.st.daysLate) || (b.st.dueNow - a.st.dueNow));
+  let filter = 'hoy';
   view.innerHTML = `<h2>Cobros</h2>
-    <input id="q" placeholder="Buscar cliente…">
-    <div id="list"></div>`;
+    <div class="chips"><button class="chip on" data-f="hoy">Para cobrar</button><button class="chip" data-f="late">Atrasados</button><button class="chip" data-f="all">Todos</button></div>
+    <input id="q" placeholder="Buscar cliente…"><div id="list"></div>`;
   const draw = () => {
     const q = $('#q').value.toLowerCase();
-    const list = loans.filter(L => (L.clientName || '').toLowerCase().includes(q));
+    const list = loans.filter(L => (L.clientName || '').toLowerCase().includes(q))
+      .filter(L => filter === 'all' || (filter === 'late' ? L.st.late : L.st.dueNow > 0 && (L.type === 'cuotas' ? L.st.overdueCount > 0 : L.st.daysSincePay >= 7)));
     $('#list').innerHTML = list.length ? list.map(L => `
       <div class="card tap" data-id="${L.id}">
         <div class="row"><b>${esc(L.clientName)}</b>
-          ${L.st.late ? `<span class="badge late">Atrasado ${L.st.daysSincePay} días</span>` : `<span class="badge">${L.st.daysSincePay} días</span>`}</div>
+          ${L.st.late ? `<span class="badge late">Atrasado ${L.st.daysLate} días</span>` : `<span class="badge">${L.type === 'cuotas' ? (L.st.next ? 'Próx. ' + fdate(L.st.next.due) : 'Al día') : L.st.daysSincePay + ' días'}</span>`}</div>
+        <div class="mute">${esc(typeLabel(L))}</div>
         <div class="row" style="margin-top:6px">
-          <div><span class="mute">Interés debe</span><div class="big">${money(L.st.interestDue)}</div></div>
-          <div style="text-align:right"><span class="mute">Capital · ${pct(L.rateWeekly)}/sem</span><div><b>${money(L.st.capital)}</b></div></div>
+          <div><span class="mute">${L.type === 'cuotas' ? 'Vencido' : 'Interés debe'}</span><div class="big">${money(L.st.dueNow)}</div></div>
+          <div style="text-align:right"><span class="mute">${L.type === 'cuotas' ? 'Saldo total' : 'Capital'}</span><div><b>${money(L.type === 'cuotas' ? L.st.total : L.st.capital)}</b></div></div>
         </div>
+        ${L.st.moraDue > 0 ? `<div class="mute" style="color:var(--red)">Incluye mora ${money(L.st.moraDue)}</div>` : ''}
         ${isAdmin() ? `<div class="mute">Cobrador: ${esc(collectorName(L.collectorId))}</div>` : ''}
-      </div>`).join('') : '<div class="empty">No hay préstamos activos.</div>';
+      </div>`).join('') : '<div class="empty">Nada pendiente aquí.</div>';
     $('#list').querySelectorAll('[data-id]').forEach(c => c.onclick = () => openLoan(c.dataset.id));
   };
+  view.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; view.querySelectorAll('[data-f]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
   $('#q').oninput = draw; draw();
 }
 
 // ---------- PRÉSTAMO ----------
+function scheduleTable(L, asOf = todayStr()) {
+  return `<table><tr><th>#</th><th>Fecha</th><th class="n">Cuota</th><th class="n">Pagado</th><th>Estado</th></tr>
+    ${L.schedule.map(c => {
+      const done = r2(c.amount - c.paid) <= 0.004;
+      const state = done ? '<span class="badge done">Pagada</span>' : c.due < asOf ? '<span class="badge late">Vencida</span>' : c.due === asOf ? '<span class="badge late">Hoy</span>' : '<span class="badge">Pendiente</span>';
+      return `<tr><td>${c.n}</td><td>${fdate(c.due)}</td><td class="n">${money(c.amount)}</td><td class="n">${money(c.paid)}</td><td>${state}</td></tr>`;
+    }).join('')}</table>`;
+}
+
 async function openLoan(id) {
   const snap = await getDoc(doc(db, 'loans', id));
   if (!snap.exists()) return toast('Préstamo no encontrado');
@@ -355,37 +432,68 @@ async function openLoan(id) {
   const st = loanStatus(L);
   const pays = rows(await getDocs(qPaysByLoan(id))).sort((a, b) => (b.date + (b.createdAt?.seconds || 0)).localeCompare(a.date + (a.createdAt?.seconds || 0)));
   const active = L.status === 'activo';
-  const badge = { activo: st.late ? '<span class="badge late">Atrasado</span>' : '<span class="badge">Activo</span>', saldado: '<span class="badge done">Saldado</span>', castigado: '<span class="badge bad">Incobrable</span>' }[L.status] || '';
+  const isC = L.type === 'cuotas';
+  const stateBadge = { activo: st.late ? '<span class="badge late">Atrasado</span>' : '<span class="badge">Activo</span>', saldado: '<span class="badge done">Saldado</span>', castigado: '<span class="badge bad">Incobrable</span>', renovado: '<span class="badge done">Renovado</span>' }[L.status] || '';
+  const nextC = isC ? L.schedule.find(c => r2(c.amount - c.paid) > 0.004) : null;
+  const chips = isC
+    ? [['Lo vencido', st.dueNow], ['Una cuota', nextC ? r2(nextC.amount - nextC.paid + st.moraDue) : 0], ['Saldar todo', st.total]]
+    : [['Solo interés', st.dueNow], ['Saldar todo', st.total]];
+  const mora = L.mora && L.mora.type && L.mora.type !== 'none'
+    ? `${L.mora.type === 'pct' ? L.mora.value + '% de la cuota' : money(L.mora.value)} por día${L.mora.grace ? `, ${L.mora.grace} días de gracia` : ''}` : 'Sin mora';
   const sh = openModal(`
-    <h2>${esc(L.clientName)} ${badge}</h2>
+    <h2>${esc(L.clientName)} ${stateBadge}</h2>
     <div class="card">
       <div class="row"><span class="mute">Prestado</span><b>${money(L.principal)} · ${fdate(L.startDate)}</b></div>
-      <div class="row"><span class="mute">Tasa</span><b>${pct(L.rateWeekly)} semanal</b></div>
-      <div class="row"><span class="mute">Capital pendiente</span><b>${money(st.capital)}</b></div>
-      <div class="row"><span class="mute">Interés pendiente hoy</span><b style="color:var(--red)">${money(st.interestDue)}</b></div>
+      <div class="row"><span class="mute">Tipo</span><b>${esc(typeLabel(L))}</b></div>
+      ${isC ? `<div class="row"><span class="mute">Tasa</span><b>${pct(L.ratePeriod)} por cuota (${L.method === 'frances' ? 'francés' : 'plano'})</b></div>
+        <div class="row"><span class="mute">Cuotas pagadas</span><b>${st.paidCount} de ${L.schedule.length}</b></div>
+        <div class="row"><span class="mute">Vencido hoy</span><b style="color:var(--red)">${money(st.overdue)}</b></div>
+        <div class="row"><span class="mute">Saldo pendiente</span><b>${money(st.balance)}</b></div>`
+      : `<div class="row"><span class="mute">Capital pendiente</span><b>${money(st.capital)}</b></div>
+        <div class="row"><span class="mute">Interés pendiente hoy</span><b style="color:var(--red)">${money(st.interestDue)}</b></div>
+        <div class="row"><span class="mute">Interés por día / semana</span><b>${money(st.daily)} / ${money(st.weekly)}</b></div>`}
+      <div class="row"><span class="mute">Mora pendiente</span><b style="color:${st.moraDue > 0 ? 'var(--red)' : 'inherit'}">${money(st.moraDue)}</b></div>
       <div class="row"><span class="mute">Total para saldar hoy</span><b>${money(st.total)}</b></div>
-      <div class="row"><span class="mute">Interés por día / semana</span><b>${money(st.daily)} / ${money(st.weekly)}</b></div>
-      <div class="row"><span class="mute">Interés cobrado total</span><b style="color:var(--green)">${money(L.totalInterestPaid)}</b></div>
+      <div class="row"><span class="mute">Regla de mora</span><b>${esc(mora)}</b></div>
+      <div class="row"><span class="mute">Ganado (interés + mora)</span><b style="color:var(--green)">${money((L.totalInterestPaid || 0) + (L.totalMoraPaid || 0))}</b></div>
+      ${L.collateral ? `<div class="row"><span class="mute">Garantía</span><b>${esc(L.collateral)}</b></div>` : ''}
+      ${L.note ? `<div class="mute" style="margin-top:6px">${esc(L.note)}</div>` : ''}
+      <div id="gphoto"></div>
     </div>
     ${active ? `
     <h3>Registrar pago</h3>
     <div class="card">
-      <div class="chips">
-        <button class="chip" data-amt="${st.interestDue}">Solo interés<br><small>${money(st.interestDue)}</small></button>
-        <button class="chip" data-amt="${st.total}">Saldar todo<br><small>${money(st.total)}</small></button>
-      </div>
+      <div class="chips">${chips.map(([t, v]) => `<button class="chip" data-amt="${v}">${t}<br><small>${money(v)}</small></button>`).join('')}</div>
       <label>Monto recibido (RD$)</label>
       <input id="pamt" type="number" inputmode="decimal" step="0.01" min="0">
       <div class="split" id="psplit">Escribe el monto para ver cómo se aplica.</div>
+      <label>Forma de pago</label><select id="pmet">${Object.entries(METHODS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
       <label>Nota (opcional)</label><input id="pnote">
       <button class="btn" id="pgo">Registrar pago</button>
     </div>` : ''}
+    <div class="btns">
+      ${active ? `<a class="btn sec" style="text-align:center;text-decoration:none" target="_blank" id="lrem">Recordar por WhatsApp</a>` : ''}
+      <button class="btn sec" id="lcontract">Contrato / Pagaré</button>
+    </div>
+    ${isC ? `<h3>Calendario de cuotas</h3><div class="card">${scheduleTable(L)}</div>` : ''}
     <h3>Historial de pagos</h3>
     <div class="card">${pays.length ? `<table><tr><th>Fecha</th><th class="n">Pagó</th><th class="n">Interés</th><th class="n">Capital</th></tr>
-      ${pays.map(p => `<tr style="${p.anulado ? 'text-decoration:line-through;opacity:.5' : ''}" class="tap" data-pay="${p.id}"><td>${fdate(p.date)}</td><td class="n">${money(p.amount)}</td><td class="n">${money(p.toInterest)}</td><td class="n">${money(p.toCapital)}</td></tr>`).join('')}</table>
-      <p class="mute">Toca un pago para ver el recibo.</p>` : '<div class="mute">Sin pagos todavía.</div>'}</div>
-    ${isAdmin() && active ? `<div class="btns"><button class="btn warn sm" id="lbad">Marcar incobrable</button></div>` : ''}
+      ${pays.map(p => `<tr style="${p.anulado ? 'text-decoration:line-through;opacity:.5' : ''}" class="tap" data-pay="${p.id}"><td>${fdate(p.date)}</td><td class="n">${money(p.amount)}</td><td class="n">${money((p.toInterest || 0) + (p.toMora || 0))}</td><td class="n">${money(p.toCapital)}</td></tr>`).join('')}</table>
+      <p class="mute">Toca un pago para ver el recibo. "Interés" incluye mora.</p>` : '<div class="mute">Sin pagos todavía.</div>'}</div>
+    ${isAdmin() && active ? `<h3>Acciones</h3><div class="card">
+      ${st.moraDue > 0 ? '<button class="btn sec" id="lwaive">Perdonar mora</button>' : ''}
+      ${isC ? '<button class="btn sec" id="lpost">Prórroga (mover cuotas)</button>' : '<button class="btn sec" id="lext">Ampliar (prestar más)</button>'}
+      <button class="btn sec" id="lrenew">Renovar préstamo</button>
+      <button class="btn sec" id="lgar">Garantía / foto</button>
+      <button class="btn warn" id="lbad">Marcar incobrable</button>
+    </div>` : ''}
   `);
+  // Foto de garantía
+  loadPhoto('g_' + id).then(src => { const g = sh.querySelector('#gphoto'); if (src && g) g.innerHTML = `<img src="${src}" style="width:100%;border-radius:10px;margin-top:8px">`; });
+  // Recordatorio
+  const rem = sh.querySelector('#lrem');
+  if (rem) rem.href = waLink(L.clientPhone, `Hola ${L.clientName}, le saluda ${settings.businessName}. Le recordamos su pago pendiente de ${money(st.dueNow)}${st.moraDue > 0 ? ` (incluye mora de ${money(st.moraDue)})` : ''}. Saldo total: ${money(st.total)}. ¡Gracias!`);
+  sh.querySelector('#lcontract').onclick = () => printContract(L);
   if (active) {
     const amt = sh.querySelector('#pamt'), split = sh.querySelector('#psplit');
     const preview = () => {
@@ -393,7 +501,7 @@ async function openLoan(id) {
       if (!(v > 0)) { split.textContent = 'Escribe el monto para ver cómo se aplica.'; return; }
       try {
         const r = applyPayment(L, v);
-        split.innerHTML = `A interés: <b>${money(r.toInterest)}</b> · A capital: <b>${money(r.toCapital)}</b><br>Queda capital: <b>${money(r.capitalBalance)}</b>${r.accruedInterest > 0 ? ` · Interés atrasado: <b style="color:var(--red)">${money(r.accruedInterest)}</b>` : ''}`;
+        split.innerHTML = `${r.toMora > 0 ? `A mora: <b>${money(r.toMora)}</b> · ` : ''}A interés: <b>${money(r.toInterest)}</b> · A capital: <b>${money(r.toCapital)}</b><br>Queda debiendo: <b>${money(r.after.total)}</b>`;
       } catch (e) { split.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
     };
     amt.oninput = preview;
@@ -403,52 +511,94 @@ async function openLoan(id) {
       if (!(v > 0)) return toast('Escribe un monto');
       const btn = sh.querySelector('#pgo'); btn.disabled = true; btn.textContent = 'Guardando…';
       try {
-        const pay = await registerPayment(id, v, sh.querySelector('#pnote').value.trim());
+        const pay = await registerPayment(id, v, sh.querySelector('#pnote').value.trim(), sh.querySelector('#pmet').value);
         closeModal(); showReceipt(pay); if (tab !== 'clientes') refresh();
       } catch (e) { toast(errMsg(e)); btn.disabled = false; btn.textContent = 'Registrar pago'; }
     };
   }
-  sh.querySelectorAll('[data-pay]').forEach(r => r.onclick = () => { const p = pays.find(x => x.id === r.dataset.pay); showReceipt(p, L); });
-  const bad = sh.querySelector('#lbad');
-  if (bad) bad.onclick = async () => {
+  sh.querySelectorAll('[data-pay]').forEach(r => r.onclick = () => showReceipt(pays.find(x => x.id === r.dataset.pay)));
+  const on = (sel, fn) => { const b = sh.querySelector(sel); if (b) b.onclick = fn; };
+  on('#lbad', async () => {
     if (!confirm('¿Marcar este préstamo como incobrable? Dejará de aparecer en cobros.')) return;
     await updateDoc(doc(db, 'loans', id), { status: 'castigado', updatedAt: serverTimestamp() });
     closeModal(); toast('Marcado como incobrable'); refresh();
-  };
+  });
+  on('#lwaive', async () => {
+    if (!confirm(`¿Perdonar la mora de ${money(st.moraDue)}?`)) return;
+    const w = waiveMora(L);
+    await updateDoc(doc(db, 'loans', id), { ...w.updates, updatedAt: serverTimestamp() });
+    closeModal(); toast('Mora perdonada'); openLoan(id);
+  });
+  on('#lpost', async () => {
+    const k = parseInt(prompt('¿Cuántas cuotas mover hacia adelante? (las pendientes se corren ese número de períodos)', '1'), 10);
+    if (!(k > 0)) return;
+    await updateDoc(doc(db, 'loans', id), { schedule: postponeCuotas(L, k), prorrogas: (L.prorrogas || 0) + 1, updatedAt: serverTimestamp() });
+    closeModal(); toast('Prórroga aplicada'); openLoan(id);
+  });
+  on('#lext', async () => {
+    const extra = parseFloat(prompt('¿Cuánto dinero más le vas a prestar? (RD$)', ''));
+    if (!(extra > 0)) return;
+    if (!confirm(`¿Prestar ${money(extra)} más? El capital sube a ${money(L.capitalBalance + extra)}.`)) return;
+    await updateDoc(doc(db, 'loans', id), { ...extendReditos(L, extra), updatedAt: serverTimestamp() });
+    await cashMove({ type: 'desembolso', amount: r2(extra), uid: me.uid, loanId: id, clientName: L.clientName, note: 'Ampliación de préstamo' });
+    closeModal(); toast('Préstamo ampliado'); openLoan(id);
+  });
+  on('#lrenew', async () => {
+    const cs = await getDoc(doc(db, 'clients', L.clientId));
+    if (!cs.exists()) return toast('Cliente no encontrado');
+    loanForm({ id: cs.id, ...cs.data() }, { renew: L, carried: st.total });
+  });
+  on('#lgar', async () => {
+    const txt = prompt('Describe la garantía (ej. matrícula moto Honda 2019, TV Samsung 50")', L.collateral || '');
+    if (txt === null) return;
+    await updateDoc(doc(db, 'loans', id), { collateral: txt.trim(), updatedAt: serverTimestamp() });
+    if (confirm('¿Agregar una foto de la garantía?')) {
+      const data = await pickPhoto();
+      if (data) await savePhoto('g_' + id, data, L.collectorId, 'garantia');
+    }
+    closeModal(); toast('Garantía guardada'); openLoan(id);
+  });
 }
 
-async function registerPayment(loanId, amount, note) {
+async function registerPayment(loanId, amount, note, method = 'efectivo') {
   const date = todayStr();
   const loanRef = doc(db, 'loans', loanId);
   const payRef = doc(collection(db, 'payments'));
-  let pay;
-  await runTransaction(db, async tx => {
-    const s = await tx.get(loanRef);
+  const build = L => {
+    const r = applyPayment(L, amount, date);
+    const prev = {}; PAY_FIELDS.forEach(f => { prev[f] = L[f] === undefined ? null : L[f]; });
+    const pay = {
+      loanId, clientId: L.clientId, clientName: L.clientName, clientPhone: L.clientPhone || '',
+      collectorId: L.collectorId || me.uid, byUid: me.uid, byName: me.name, loanType: L.type || 'reditos',
+      amount: r2(amount), toMora: r.toMora, toInterest: r.toInterest, toCapital: r.toCapital,
+      capitalAfter: r.after.capital, interestAfter: r.after.interest, moraAfter: r.after.mora, totalAfter: r.after.total,
+      method, date, note: note || '', anulado: false, createdAt: serverTimestamp(), prev
+    };
+    return { pay, loanUpdate: { ...r.updates, lastPaymentId: payRef.id, updatedAt: serverTimestamp() } };
+  };
+  try {
+    let out;
+    await runTransaction(db, async tx => {
+      const s = await tx.get(loanRef);
+      const L = s.data();
+      if (L.status !== 'activo') throw new Error('Este préstamo no está activo.');
+      out = build(L);
+      tx.set(payRef, out.pay);
+      tx.update(loanRef, out.loanUpdate);
+    });
+    return { id: payRef.id, ...out.pay };
+  } catch (e) {
+    if (!(String(e.code || '').includes('unavailable') || !navigator.onLine)) throw e;
+    // Sin internet: se guarda en el teléfono y se envía al volver la conexión
+    const s = await getDoc(loanRef);
     const L = s.data();
     if (L.status !== 'activo') throw new Error('Este préstamo no está activo.');
-    const r = applyPayment(L, amount, date);
-    pay = {
-      loanId, clientId: L.clientId, clientName: L.clientName, clientPhone: L.clientPhone || '',
-      collectorId: L.collectorId || me.uid, byUid: me.uid, byName: me.name,
-      amount: r2(amount), toInterest: r.toInterest, toCapital: r.toCapital,
-      capitalAfter: r.capitalBalance, interestAfter: r.accruedInterest,
-      date, note: note || '', anulado: false, createdAt: serverTimestamp(),
-      prev: {
-        capitalBalance: L.capitalBalance, accruedInterest: L.accruedInterest || 0, lastCalcDate: L.lastCalcDate,
-        lastPaymentDate: L.lastPaymentDate || null, lastPaymentId: L.lastPaymentId || null,
-        totalInterestPaid: L.totalInterestPaid || 0, totalCapitalPaid: L.totalCapitalPaid || 0, status: L.status
-      }
-    };
-    tx.set(payRef, pay);
-    tx.update(loanRef, {
-      capitalBalance: r.capitalBalance, accruedInterest: r.accruedInterest, lastCalcDate: date,
-      lastPaymentDate: date, lastPaymentId: payRef.id,
-      totalInterestPaid: r2((L.totalInterestPaid || 0) + r.toInterest),
-      totalCapitalPaid: r2((L.totalCapitalPaid || 0) + r.toCapital),
-      status: r.status, updatedAt: serverTimestamp()
-    });
-  });
-  return { id: payRef.id, ...pay };
+    const out = build(L);
+    const b = writeBatch(db); b.set(payRef, out.pay); b.update(loanRef, out.loanUpdate);
+    b.commit().catch(err => toast('Un pago sin conexión no se pudo guardar: ' + errMsg(err)));
+    toast('Sin internet: el pago se guardó en el teléfono y se enviará al volver la conexión.');
+    return { id: payRef.id, ...out.pay, offline: true };
+  }
 }
 
 async function voidPayment(p) {
@@ -471,39 +621,66 @@ function receiptText(p) {
     `Fecha: ${fdate(p.date)}`,
     `Cliente: ${p.clientName}`,
     ``,
-    `Pagó: ${money(p.amount)}`,
+    `Pagó: ${money(p.amount)} (${METHODS[p.method] || 'Efectivo'})`,
+    p.toMora > 0 ? `  A mora: ${money(p.toMora)}` : null,
     `  A interés: ${money(p.toInterest)}`,
     `  A capital: ${money(p.toCapital)}`,
     ``,
     `Capital pendiente: ${money(p.capitalAfter)}`,
-    p.interestAfter > 0 ? `Interés atrasado: ${money(p.interestAfter)}` : null,
-    p.capitalAfter <= 0 && p.interestAfter <= 0 ? `✅ PRÉSTAMO SALDADO` : null,
+    p.totalAfter !== undefined ? `Saldo total pendiente: ${money(p.totalAfter)}` : (p.interestAfter > 0 ? `Interés atrasado: ${money(p.interestAfter)}` : null),
+    (p.totalAfter !== undefined ? p.totalAfter <= 0 : p.capitalAfter <= 0 && p.interestAfter <= 0) ? `✅ PRÉSTAMO SALDADO` : null,
     `Cobrado por: ${p.byName}`,
     p.anulado ? `*** PAGO ANULADO ***` : null,
   ].filter(x => x !== null).join('\n');
 }
-function showReceipt(p, L) {
+function showReceipt(p) {
   const txt = receiptText(p);
-  const phone = String(p.clientPhone || (L && L.clientPhone) || '').replace(/\D/g, '');
-  const wa = phone ? (phone.length === 10 ? '1' + phone : phone) : '';
   const sh = openModal(`
     <h2>Recibo</h2>
     <pre class="receipt">${esc(txt)}</pre>
     <div class="btns">
-      <a class="btn" style="text-align:center;text-decoration:none" target="_blank" href="https://wa.me/${wa}?text=${encodeURIComponent(txt)}">WhatsApp</a>
+      <a class="btn" style="text-align:center;text-decoration:none" target="_blank" href="${waLink(p.clientPhone, txt)}">WhatsApp</a>
       <button class="btn sec" id="rprint">Imprimir</button>
     </div>
     ${isAdmin() && !p.anulado ? `<div class="btns"><button class="btn warn sm" id="rvoid">Anular este pago</button></div>` : ''}`);
-  sh.querySelector('#rprint').onclick = () => {
-    const w = window.open('', '_blank');
-    w.document.write(`<pre style="font:14px monospace;white-space:pre-wrap">${esc(txt.replace(/\*/g, ''))}</pre><script>print()<\/script>`);
-    w.document.close();
-  };
+  sh.querySelector('#rprint').onclick = () => printHtml('Recibo', `<pre style="max-width:300px">${esc(txt.replace(/\*/g, ''))}</pre>`);
   const v = sh.querySelector('#rvoid');
   if (v) v.onclick = async () => {
     if (!confirm('¿Anular este pago? El préstamo vuelve a como estaba antes del pago.')) return;
     try { await voidPayment(p); closeModal(); toast('Pago anulado'); refresh(); } catch (e) { toast(errMsg(e)); }
   };
+}
+
+// ---------- CONTRATO / PAGARÉ ----------
+async function printContract(L) {
+  let c = {};
+  try { const s = await getDoc(doc(db, 'clients', L.clientId)); if (s.exists()) c = s.data(); } catch (_) {}
+  const S = settings;
+  const isC = L.type === 'cuotas';
+  const moraTxt = L.mora && L.mora.type && L.mora.type !== 'none'
+    ? `En caso de atraso, EL DEUDOR pagará un cargo por mora de ${L.mora.type === 'pct' ? L.mora.value + '% del monto de la cuota vencida' : money(L.mora.value)} por cada día de atraso${L.mora.grace ? `, después de ${L.mora.grace} días de gracia` : ''}.`
+    : '';
+  const terms = isC
+    ? `EL DEUDOR se compromete a pagar dicha suma más los intereses convenidos (${pct(L.ratePeriod)} por cuota, método ${L.method === 'frances' ? 'francés' : 'de interés fijo'}) en ${L.schedule.length} cuotas ${(FREQ[L.freq] || '').toLowerCase()}es, según el calendario siguiente, para un total de ${money(L.schedule.reduce((t, x) => t + x.amount, 0))}:`
+    : `EL DEUDOR pagará un interés de ${pct(L.rateWeekly)} semanal sobre el capital pendiente, calculado por día, pudiendo abonar al capital en cualquier momento. El capital será devuelto a más tardar en la fecha que acuerden las partes o a simple requerimiento de EL ACREEDOR con aviso de treinta (30) días.`;
+  printHtml('Contrato de préstamo', `
+    <h1>CONTRATO DE PRÉSTAMO Y PAGARÉ</h1>
+    <p>En ${esc(S.city || '__________')}, República Dominicana, a los ${fdate(L.startDate)}.</p>
+    <p><b>DE UNA PARTE:</b> ${esc(S.lenderName || '______________________')}, dominicano(a), mayor de edad, portador(a) de la cédula No. ${esc(S.lenderCedula || '______________')}, domiciliado(a) en ${esc(S.lenderAddress || '______________________')}, quien en lo adelante se denominará <b>EL ACREEDOR</b>;</p>
+    <p><b>DE LA OTRA PARTE:</b> ${esc(L.clientName)}, portador(a) de la cédula No. ${esc(c.cedula || '______________')}, domiciliado(a) en ${esc(c.address || '______________________')}, teléfono ${esc(c.phone || L.clientPhone || '__________')}, quien en lo adelante se denominará <b>EL DEUDOR</b>.</p>
+    <p><b>PRIMERO:</b> EL ACREEDOR entrega en calidad de préstamo a EL DEUDOR la suma de <b>${money(L.principal)}</b>, que EL DEUDOR declara haber recibido a su entera satisfacción.</p>
+    <p><b>SEGUNDO:</b> ${terms}</p>
+    ${isC ? `<table><tr><th>#</th><th>Fecha</th><th>Monto</th></tr>${L.schedule.map(x => `<tr><td>${x.n}</td><td>${fdate(x.due)}</td><td>${money(x.amount)}</td></tr>`).join('')}</table>` : ''}
+    ${moraTxt ? `<p><b>TERCERO:</b> ${moraTxt}</p>` : ''}
+    ${L.collateral ? `<p><b>GARANTÍA:</b> Para seguridad del pago, EL DEUDOR ofrece en garantía: ${esc(L.collateral)}.</p>` : ''}
+    ${c.guarantor ? `<p><b>FIADOR SOLIDARIO:</b> ${esc(c.guarantor)}, quien se obliga solidariamente con EL DEUDOR al pago de las sumas adeudadas.</p>` : ''}
+    <p><b>PAGOS:</b> Todo pago será respaldado por un recibo emitido por EL ACREEDOR o su cobrador autorizado. Los pagos se aplican primero a la mora, luego a los intereses y finalmente al capital.</p>
+    <p><b>INCUMPLIMIENTO:</b> La falta de pago de dos (2) o más cuotas o períodos consecutivos hará exigible la totalidad de la deuda.</p>
+    <p>Hecho y firmado en dos (2) originales, uno para cada parte.</p>
+    <div class="sig"><div>EL ACREEDOR</div><div>EL DEUDOR</div>${c.guarantor ? '<div>FIADOR</div>' : ''}</div>
+    <p style="margin-top:40px">Yo, ______________________, Abogado Notario Público de los del número para el municipio de ______________, CERTIFICO Y DOY FE que las firmas que anteceden fueron puestas libre y voluntariamente en mi presencia por las personas arriba indicadas.</p>
+    <div class="sig"><div>NOTARIO PÚBLICO</div></div>
+    <p style="font:11px Arial;color:#666;margin-top:30px">Modelo de referencia. Revísalo con tu abogado o notario antes de usarlo.</p>`);
 }
 
 // ---------- CLIENTES ----------
@@ -515,7 +692,8 @@ async function viewClientes() {
     const q = $('#q').value.toLowerCase();
     const list = clients.filter(c => [c.name, c.cedula, c.phone].join(' ').toLowerCase().includes(q));
     $('#list').innerHTML = list.length ? list.map(c => `<div class="card tap" data-id="${c.id}">
-      <b>${esc(c.name)}</b><div class="mute">${esc(c.phone || '')} ${c.cedula ? '· ' + esc(c.cedula) : ''}</div>
+      <div class="row"><b>${esc(c.name)}</b>${c.blacklist ? '<span class="badge late">Lista negra</span>' : ''}</div>
+      <div class="mute">${esc(c.phone || '')} ${c.cedula ? '· ' + esc(c.cedula) : ''}</div>
       ${isAdmin() ? `<div class="mute">Cobrador: ${esc(collectorName(c.collectorId))}</div>` : ''}</div>`).join('')
       : '<div class="empty">No hay clientes.</div>';
     $('#list').querySelectorAll('[data-id]').forEach(el => el.onclick = () => openClient(el.dataset.id));
@@ -525,42 +703,79 @@ async function viewClientes() {
 }
 
 function collectorOptions(sel) {
-  const list = usersCache.filter(u => u.active !== false);
-  return list.map(u => `<option value="${u.id}" ${u.id === sel ? 'selected' : ''}>${esc(u.name)} (${u.role === 'admin' ? 'admin' : 'cobrador'})</option>`).join('');
+  return usersCache.filter(u => u.active !== false)
+    .map(u => `<option value="${u.id}" ${u.id === sel ? 'selected' : ''}>${esc(u.name)} (${u.role === 'admin' ? 'admin' : 'cobrador'})</option>`).join('');
 }
 
 function clientForm(c = {}) {
+  let photo = null;
   const sh = openModal(`<h2>${c.id ? 'Editar cliente' : 'Nuevo cliente'}</h2>
     <label>Nombre completo *</label><input id="cn" value="${esc(c.name)}">
-    <label>Cédula</label><input id="cc" value="${esc(c.cedula)}" placeholder="000-0000000-0" inputmode="numeric">
+    <label>Cédula</label><input id="cc" value="${esc(c.cedula)}" placeholder="000-0000000-0" inputmode="numeric"><div class="mute" id="ccw" style="margin:-6px 0 8px"></div>
     <label>Teléfono / WhatsApp</label><input id="cp" value="${esc(c.phone)}" placeholder="809-000-0000" inputmode="tel">
     <label>Dirección</label><input id="ca" value="${esc(c.address)}">
     <label>Trabajo / negocio</label><input id="cw" value="${esc(c.work)}">
-    <label>Garante (nombre y teléfono)</label><input id="cg" value="${esc(c.guarantor)}">
+    <label>Garante / fiador (nombre, cédula y teléfono)</label><input id="cg" value="${esc(c.guarantor)}">
     <label>Cobrador asignado</label><select id="ck">${collectorOptions(c.collectorId || me.uid)}</select>
     <label>Notas</label><textarea id="cnotes" rows="2">${esc(c.notes)}</textarea>
+    <label style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input type="checkbox" id="cbl" style="width:auto;margin:0" ${c.blacklist ? 'checked' : ''}> Lista negra (no prestarle)</label>
+    <input id="cblr" placeholder="Motivo de lista negra" value="${esc(c.blacklistReason)}" ${c.blacklist ? '' : 'hidden'}>
+    <button class="btn sec" id="cph">📷 ${c.id ? 'Cambiar foto' : 'Agregar foto'}</button><div id="cphp" class="mute"></div>
     <button class="btn" id="csave">Guardar</button>`);
+  const ced = sh.querySelector('#cc'), cw = sh.querySelector('#ccw');
+  const checkCed = () => { const v = ced.value.trim(); cw.innerHTML = !v ? '' : validCedula(v) ? '<span style="color:var(--green)">✓ Cédula válida</span>' : '<span style="color:var(--red)">Esta cédula no parece válida. Revísala.</span>'; };
+  ced.oninput = checkCed; checkCed();
+  sh.querySelector('#cbl').onchange = e => { sh.querySelector('#cblr').hidden = !e.target.checked; };
+  sh.querySelector('#cph').onclick = async () => { photo = await pickPhoto(); sh.querySelector('#cphp').textContent = photo ? '✓ Foto lista' : ''; };
   sh.querySelector('#csave').onclick = async () => {
     const data = {
-      name: sh.querySelector('#cn').value.trim(), cedula: sh.querySelector('#cc').value.trim(),
+      name: sh.querySelector('#cn').value.trim(), cedula: ced.value.trim(),
       phone: sh.querySelector('#cp').value.trim(), address: sh.querySelector('#ca').value.trim(),
       work: sh.querySelector('#cw').value.trim(), guarantor: sh.querySelector('#cg').value.trim(),
-      collectorId: sh.querySelector('#ck').value, notes: sh.querySelector('#cnotes').value.trim(), updatedAt: serverTimestamp()
+      collectorId: sh.querySelector('#ck').value, notes: sh.querySelector('#cnotes').value.trim(),
+      blacklist: sh.querySelector('#cbl').checked, blacklistReason: sh.querySelector('#cblr').value.trim(),
+      updatedAt: serverTimestamp()
     };
     if (!data.name) return toast('Escribe el nombre');
+    const btn = sh.querySelector('#csave'); btn.disabled = true;
     try {
-      if (c.id) {
-        await updateDoc(doc(db, 'clients', c.id), data);
-        // Mantener préstamos sincronizados (nombre, teléfono, cobrador)
-        const ls = await getDocs(query(collection(db, 'loans'), where('clientId', '==', c.id)));
-        if (!ls.empty) { const b = writeBatch(db); ls.forEach(d => b.update(d.ref, { clientName: data.name, clientPhone: data.phone, collectorId: data.collectorId })); await b.commit(); }
-        closeModal(); toast('Cliente actualizado'); openClient(c.id);
-      } else {
-        const ref = await addDoc(collection(db, 'clients'), { ...data, createdAt: serverTimestamp() });
-        closeModal(); toast('Cliente creado'); if (tab === 'clientes') refresh(); openClient(ref.id);
+      // Revisar si la cédula ya existe en otro cliente
+      if (data.cedula) {
+        const dup = rows(await getDocs(query(collection(db, 'clients'), where('cedula', '==', data.cedula)))).filter(x => x.id !== c.id);
+        if (dup.length && !confirm(`Ya existe un cliente con esa cédula: ${dup[0].name}${dup[0].blacklist ? ' (LISTA NEGRA)' : ''}. ¿Guardar de todas formas?`)) { btn.disabled = false; return; }
       }
-    } catch (e) { toast(errMsg(e)); }
+      let cid = c.id;
+      if (cid) {
+        await updateDoc(doc(db, 'clients', cid), data);
+        const ls = await getDocs(query(collection(db, 'loans'), where('clientId', '==', cid)));
+        const b = writeBatch(db);
+        ls.forEach(d => b.update(d.ref, { clientName: data.name, clientPhone: data.phone, collectorId: data.collectorId }));
+        if (data.collectorId !== c.collectorId) {
+          ls.forEach(d => b.set(doc(db, 'photos', 'g_' + d.id), { collectorId: data.collectorId }, { merge: true }));
+          b.set(doc(db, 'photos', 'c_' + cid), { collectorId: data.collectorId }, { merge: true });
+        }
+        await b.commit().catch(() => {});
+      } else {
+        cid = (await addDoc(collection(db, 'clients'), { ...data, createdAt: serverTimestamp() })).id;
+      }
+      if (photo) await savePhoto('c_' + cid, photo, data.collectorId, 'cliente');
+      closeModal(); toast(c.id ? 'Cliente actualizado' : 'Cliente creado');
+      if (tab === 'clientes') refresh();
+      openClient(cid);
+    } catch (e) { toast(errMsg(e)); btn.disabled = false; }
   };
+}
+
+function clientHistory(loans) {
+  const today = todayStr();
+  const h = { total: loans.length, active: 0, paid: 0, bad: 0, renewed: 0, lateNow: 0, maxLate: 0 };
+  loans.forEach(L => {
+    if (L.status === 'activo') { h.active++; const s = loanStatus(L, today); if (s.late) { h.lateNow++; h.maxLate = Math.max(h.maxLate, s.daysLate); } }
+    else if (L.status === 'saldado') h.paid++;
+    else if (L.status === 'castigado') h.bad++;
+    else if (L.status === 'renovado') h.renewed++;
+  });
+  return h;
 }
 
 async function openClient(id) {
@@ -568,7 +783,11 @@ async function openClient(id) {
   if (!snap.exists()) return toast('Cliente no encontrado');
   const c = { id, ...snap.data() };
   const loans = rows(await getDocs(qLoansByClient(id))).sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
-  const sh = openModal(`<h2>${esc(c.name)}</h2>
+  const h = clientHistory(loans);
+  const rating = h.bad ? ['Malo', 'late'] : h.lateNow ? ['Atrasado ahora', 'late'] : h.paid ? ['Buen pagador', 'done'] : ['Nuevo', ''];
+  const sh = openModal(`<h2>${esc(c.name)} <span class="badge ${rating[1]}">${rating[0]}</span></h2>
+    <div id="cphoto"></div>
+    ${c.blacklist ? `<div class="card" style="border-color:var(--red)"><b style="color:var(--red)">⚠️ LISTA NEGRA</b><div>${esc(c.blacklistReason || '')}</div></div>` : ''}
     <div class="card">
       ${c.cedula ? `<div class="row"><span class="mute">Cédula</span><b>${esc(c.cedula)}</b></div>` : ''}
       ${c.phone ? `<div class="row"><span class="mute">Teléfono</span><a href="tel:${esc(c.phone)}"><b>${esc(c.phone)}</b></a></div>` : ''}
@@ -578,12 +797,21 @@ async function openClient(id) {
       <div class="row"><span class="mute">Cobrador</span><b>${esc(collectorName(c.collectorId))}</b></div>
       ${c.notes ? `<div class="mute" style="margin-top:6px">${esc(c.notes)}</div>` : ''}
     </div>
+    <div class="card"><b>Historial</b>
+      <div class="row"><span class="mute">Préstamos</span><b>${h.total} (${h.active} activos)</b></div>
+      <div class="row"><span class="mute">Saldados / renovados</span><b>${h.paid} / ${h.renewed}</b></div>
+      <div class="row"><span class="mute">Incobrables</span><b style="color:${h.bad ? 'var(--red)' : 'inherit'}">${h.bad}</b></div>
+      ${h.lateNow ? `<div class="row"><span class="mute">Atraso actual</span><b style="color:var(--red)">${h.maxLate} días</b></div>` : ''}
+    </div>
+    ${c.phone ? `<div class="btns"><a class="btn sec" style="text-align:center;text-decoration:none" href="tel:${esc(c.phone)}">Llamar</a><a class="btn sec" style="text-align:center;text-decoration:none" target="_blank" href="${waLink(c.phone, '')}">WhatsApp</a></div>` : ''}
     ${isAdmin() ? `<div class="btns"><button class="btn" id="nl">➕ Nuevo préstamo</button><button class="btn sec" id="ce">Editar</button></div>` : ''}
     <h3>Préstamos</h3>
     ${loans.length ? loans.map(L => { const s = loanStatus(L); return `<div class="card tap" data-loan="${L.id}">
-      <div class="row"><b>${money(L.principal)} · ${pct(L.rateWeekly)}/sem</b><span class="badge ${L.status === 'saldado' ? 'done' : L.status === 'castigado' ? 'bad' : s.late ? 'late' : ''}">${L.status}</span></div>
-      <div class="mute">Desde ${fdate(L.startDate)} · Capital ${money(s.capital)} · Interés ${money(L.status === 'activo' ? s.interestDue : 0)}</div></div>`; }).join('')
+      <div class="row"><b>${money(L.principal)}</b><span class="badge ${L.status === 'saldado' || L.status === 'renovado' ? 'done' : L.status === 'castigado' ? 'bad' : s.late ? 'late' : ''}">${L.status}</span></div>
+      <div class="mute">${esc(typeLabel(L))} · desde ${fdate(L.startDate)}</div>
+      ${L.status === 'activo' ? `<div class="mute">Debe hoy ${money(s.dueNow)} · Saldo ${money(s.total)}</div>` : ''}</div>`; }).join('')
       : '<div class="empty">Sin préstamos.</div>'}`);
+  loadPhoto('c_' + id).then(src => { const el = sh.querySelector('#cphoto'); if (src && el) el.innerHTML = `<img src="${src}" style="width:100%;max-height:260px;object-fit:cover;border-radius:12px;margin-bottom:10px">`; });
   sh.querySelectorAll('[data-loan]').forEach(el => el.onclick = () => openLoan(el.dataset.loan));
   if (sh.querySelector('#nl')) sh.querySelector('#nl').onclick = () => loanForm(c);
   if (sh.querySelector('#ce')) sh.querySelector('#ce').onclick = () => clientForm(c);
@@ -597,87 +825,332 @@ async function pickClientForLoan() {
   const draw = () => {
     const q = sh.querySelector('#pq').value.toLowerCase();
     sh.querySelector('#plist').innerHTML = clients.filter(c => (c.name || '').toLowerCase().includes(q))
-      .map(c => `<div class="card tap" data-id="${c.id}"><b>${esc(c.name)}</b> <span class="mute">${esc(c.phone || '')}</span></div>`).join('');
+      .map(c => `<div class="card tap" data-id="${c.id}"><b>${esc(c.name)}</b> ${c.blacklist ? '<span class="badge late">Lista negra</span>' : ''} <span class="mute">${esc(c.phone || '')}</span></div>`).join('');
     sh.querySelectorAll('[data-id]').forEach(el => el.onclick = () => loanForm(clients.find(c => c.id === el.dataset.id)));
   };
   sh.querySelector('#pq').oninput = draw; draw();
   sh.querySelector('#pcnew').onclick = () => clientForm();
 }
 
-function loanForm(c) {
-  let rate = 0.20;
-  const sh = openModal(`<h2>Préstamo para ${esc(c.name)}</h2>
-    <label>Monto prestado (RD$)</label><input id="la" type="number" inputmode="decimal" step="0.01" min="0">
-    <label>Interés semanal</label>
-    <div class="chips">
-      <button class="chip on" data-r="0.20">20%<br><small>RD$200 x mil</small></button>
-      <button class="chip" data-r="0.30">30%<br><small>RD$300 x mil</small></button>
-      <button class="chip" data-r="otro">Otro</button>
+// ---------- FORMULARIO DE PRÉSTAMO (también cotizador y renovación) ----------
+function loanForm(c, opts = {}) {
+  const { renew, carried = 0, quote } = opts;
+  const dm = settings.defaultMora || { type: 'none', value: 0, grace: 0 };
+  let type = renew ? (renew.type || 'reditos') : 'reditos', rate = 0.20;
+  const title = quote ? 'Cotizar préstamo' : renew ? `Renovar préstamo de ${esc(c.name)}` : `Préstamo para ${esc(c.name)}`;
+  const sh = openModal(`<h2>${title}</h2>
+    ${renew ? `<div class="split">Lo que debe hoy (<b>${money(carried)}</b>) pasa al nuevo préstamo. Escribe abajo solo el dinero <b>nuevo</b> que le entregas (puede ser 0).</div>` : ''}
+    <div class="chips"><button class="chip ${type === 'reditos' ? 'on' : ''}" data-t="reditos">Réditos<br><small>interés diario</small></button><button class="chip ${type === 'cuotas' ? 'on' : ''}" data-t="cuotas">Cuotas fijas<br><small>con calendario</small></button></div>
+    <label>${renew ? 'Dinero nuevo entregado (RD$)' : 'Monto prestado (RD$)'}</label><input id="la" type="number" inputmode="decimal" step="0.01" min="0" value="${renew ? 0 : ''}">
+    <div id="fred">
+      <label>Interés semanal</label>
+      <div class="chips">
+        <button class="chip on" data-r="0.20">20%<br><small>RD$200 x mil</small></button>
+        <button class="chip" data-r="0.30">30%<br><small>RD$300 x mil</small></button>
+        <button class="chip" data-r="otro">Otro</button>
+      </div>
+      <div id="lother" hidden><label>Otro porcentaje semanal (%)</label><input id="lop" type="number" inputmode="decimal" step="0.1"></div>
     </div>
-    <div id="lother" hidden><label>Otro porcentaje semanal (%)</label><input id="lop" type="number" inputmode="decimal" step="0.1"></div>
-    <label>Fecha de entrega</label><input id="ld" type="date" value="${todayStr()}">
+    <div id="fcuo" hidden>
+      <div class="grid">
+        <div><label>Frecuencia</label><select id="lfq">${Object.entries(FREQ).map(([k, v]) => `<option value="${k}" ${k === 'semanal' ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <div><label>Número de cuotas</label><input id="lnn" type="number" inputmode="numeric" value="4" min="1"></div>
+        <div><label>Interés por cuota (%)</label><input id="lrp" type="number" inputmode="decimal" step="0.1" value="10"></div>
+        <div><label>Método</label><select id="lme"><option value="plano">Fijo (prestamista)</option><option value="frances">Francés (banco)</option></select></div>
+      </div>
+      <label id="lsunw" style="display:flex;gap:8px;align-items:center;margin-bottom:8px" hidden><input type="checkbox" id="lsun" style="width:auto;margin:0" checked> No cobrar los domingos</label>
+    </div>
+    <label>Mora por atraso</label>
+    <div class="grid">
+      <div><select id="lmt"><option value="none">Sin mora</option><option value="fijo">RD$ por día</option><option value="pct">% por día</option></select></div>
+      <div><input id="lmv" type="number" inputmode="decimal" step="0.01" placeholder="Valor" value="${dm.value || ''}"></div>
+    </div>
+    <label>Días de gracia antes de la mora</label><input id="lmg" type="number" inputmode="numeric" value="${dm.grace || 0}">
+    ${quote ? '' : `<label>Garantía (opcional)</label><input id="lcol" placeholder="Ej. matrícula de moto, TV, etc." value="${esc(renew && renew.collateral || '')}">
+    <label>Nota / producto (opcional)</label><input id="lnote">
+    <label>Fecha de entrega</label><input id="ld" type="date" value="${todayStr()}">`}
     <div class="split" id="lprev">Escribe el monto.</div>
-    <button class="btn" id="lsave">Crear préstamo</button>`);
-  const amt = sh.querySelector('#la'), other = sh.querySelector('#lop');
-  const prev = () => {
-    const a = parseFloat(amt.value);
-    const r = rate === 'otro' ? (parseFloat(other.value) || 0) / 100 : rate;
-    sh.querySelector('#lprev').innerHTML = a > 0 && r > 0
-      ? `Interés: <b>${money(a * r)}</b> por semana · <b>${money(a * r / 7)}</b> por día<br>El interés corre cada día sobre el capital que quede.`
-      : 'Escribe el monto.';
+    ${quote ? '' : `<button class="btn" id="lsave">${renew ? 'Renovar' : 'Crear préstamo'}</button>`}`);
+  const $s = s => sh.querySelector(s);
+  $s('#lmt').value = renew && renew.mora ? renew.mora.type : (dm.type || 'none');
+  if (renew && renew.mora) { $s('#lmv').value = renew.mora.value || ''; $s('#lmg').value = renew.mora.grace || 0; }
+  if (renew && renew.type === 'cuotas') { $s('#lfq').value = renew.freq; $s('#lrp').value = r2(renew.ratePeriod * 100); $s('#lme').value = renew.method || 'plano'; }
+  if (renew && renew.type !== 'cuotas' && renew.rateWeekly) {
+    rate = renew.rateWeekly;
+    const match = [...sh.querySelectorAll('[data-r]')].find(x => parseFloat(x.dataset.r) === rate);
+    sh.querySelectorAll('[data-r]').forEach(x => x.classList.toggle('on', x === match));
+    if (!match) { sh.querySelector('[data-r="otro"]').classList.add('on'); rate = 'otro'; $s('#lother').hidden = false; $s('#lop').value = r2(renew.rateWeekly * 100); }
+  }
+  const params = () => {
+    const principal = r2((parseFloat($s('#la').value) || 0) + (renew ? carried : 0));
+    const start = $s('#ld') ? ($s('#ld').value || todayStr()) : todayStr();
+    const mora = { type: $s('#lmt').value, value: parseFloat($s('#lmv').value) || 0, grace: parseInt($s('#lmg').value, 10) || 0 };
+    if (type === 'reditos') {
+      const r = rate === 'otro' ? (parseFloat($s('#lop').value) || 0) / 100 : rate;
+      return { type, principal, rateWeekly: r, start, mora };
+    }
+    const freq = $s('#lfq').value;
+    return { type, principal, start, mora, freq, n: parseInt($s('#lnn').value, 10) || 0, ratePeriod: (parseFloat($s('#lrp').value) || 0) / 100, method: $s('#lme').value, skipSundays: freq === 'diario' && $s('#lsun').checked };
   };
+  const prev = () => {
+    $s('#fred').hidden = type !== 'reditos'; $s('#fcuo').hidden = type !== 'cuotas';
+    $s('#lsunw').hidden = $s('#lfq').value !== 'diario';
+    const p = params(), out = $s('#lprev');
+    if (!(p.principal > 0)) { out.textContent = 'Escribe el monto.'; return; }
+    if (p.type === 'reditos') {
+      out.innerHTML = p.rateWeekly > 0 ? `${renew ? `Nuevo capital: <b>${money(p.principal)}</b><br>` : ''}Interés: <b>${money(p.principal * p.rateWeekly)}</b> por semana · <b>${money(p.principal * p.rateWeekly / 7)}</b> por día<br>El interés corre cada día sobre el capital que quede.` : 'Escribe el porcentaje.';
+      return;
+    }
+    if (!(p.n > 0)) { out.textContent = 'Escribe el número de cuotas.'; return; }
+    const sc = buildSchedule({ principal: p.principal, rate: p.ratePeriod, n: p.n, freq: p.freq, method: p.method, start: p.start, skipSundays: p.skipSundays });
+    const total = r2(sc.reduce((t, x) => t + x.amount, 0));
+    out.innerHTML = `${renew ? `Nuevo préstamo: <b>${money(p.principal)}</b><br>` : ''}Cuota: <b>${money(sc[0].amount)}</b> ${FREQ[p.freq].toLowerCase()}${p.method === 'frances' ? ' (la última puede variar)' : ''}<br>
+      Total a pagar: <b>${money(total)}</b> · Ganancia: <b style="color:var(--green)">${money(total - p.principal)}</b><br>
+      Primera cuota: ${fdate(sc[0].due)} · Última: ${fdate(sc[sc.length - 1].due)}
+      <details style="margin-top:6px"><summary>Ver calendario</summary>${scheduleTable({ schedule: sc }, '0000-00-00')}</details>`;
+  };
+  sh.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { type = b.dataset.t; sh.querySelectorAll('[data-t]').forEach(x => x.classList.toggle('on', x === b)); prev(); });
   sh.querySelectorAll('[data-r]').forEach(ch => ch.onclick = () => {
     sh.querySelectorAll('[data-r]').forEach(x => x.classList.remove('on')); ch.classList.add('on');
     rate = ch.dataset.r === 'otro' ? 'otro' : parseFloat(ch.dataset.r);
-    sh.querySelector('#lother').hidden = rate !== 'otro'; prev();
+    $s('#lother').hidden = rate !== 'otro'; prev();
   });
-  amt.oninput = prev; other.oninput = prev;
-  sh.querySelector('#lsave').onclick = async () => {
-    const a = r2(parseFloat(amt.value));
-    const r = rate === 'otro' ? (parseFloat(other.value) || 0) / 100 : rate;
-    const start = sh.querySelector('#ld').value || todayStr();
-    if (!(a > 0)) return toast('Escribe el monto');
-    if (!(r > 0)) return toast('Escribe el porcentaje');
-    if (daysBetween(start, todayStr()) < 0) return toast('La fecha no puede ser futura');
-    if (!confirm(`¿Crear préstamo de ${money(a)} a ${pct(r)} semanal para ${c.name}?`)) return;
+  sh.querySelectorAll('input,select').forEach(el => { el.addEventListener('input', prev); el.addEventListener('change', prev); });
+  prev();
+  if (quote) return;
+  $s('#lsave').onclick = async () => {
+    const p = params();
+    const cash = r2(parseFloat($s('#la').value) || 0);
+    if (!(p.principal > 0)) return toast('Escribe el monto');
+    if (daysBetween(p.start, todayStr()) < 0) return toast('La fecha no puede ser futura');
+    if (p.type === 'reditos' && !(p.rateWeekly > 0)) return toast('Escribe el porcentaje');
+    if (p.type === 'cuotas' && !(p.n > 0)) return toast('Escribe el número de cuotas');
+    if (p.mora.type !== 'none' && !(p.mora.value > 0)) return toast('Escribe el valor de la mora o elige "Sin mora"');
+    // Revisión del cliente antes de prestar
+    const warn = [];
+    if (c.blacklist) warn.push(`⚠️ Este cliente está en LISTA NEGRA${c.blacklistReason ? ': ' + c.blacklistReason : ''}.`);
+    if (!renew) {
+      const h = clientHistory(rows(await getDocs(qLoansByClient(c.id))));
+      if (h.lateNow) warn.push(`⚠️ Tiene ${h.lateNow} préstamo(s) atrasado(s) ahora mismo (${h.maxLate} días).`);
+      if (h.bad) warn.push(`⚠️ Tiene ${h.bad} préstamo(s) incobrable(s) en su historial.`);
+      if (h.active && !h.lateNow) warn.push(`Tiene ${h.active} préstamo(s) activo(s).`);
+    }
+    const desc = p.type === 'reditos' ? `${pct(p.rateWeekly)} semanal (réditos)` : `${p.n} cuotas ${FREQ[p.freq].toLowerCase()}es, ${pct(p.ratePeriod)} por cuota`;
+    if (!confirm(`${warn.length ? warn.join('\n') + '\n\n' : ''}¿${renew ? 'Renovar' : 'Crear'} préstamo de ${money(p.principal)} a ${desc} para ${c.name}?`)) return;
+    const base = {
+      clientId: c.id, clientName: c.name, clientPhone: c.phone || '', collectorId: c.collectorId || me.uid,
+      type: p.type, principal: p.principal, startDate: p.start, mora: p.mora,
+      collateral: $s('#lcol').value.trim(), note: $s('#lnote').value.trim(),
+      accruedInterest: 0, accruedMora: 0, lastCalcDate: p.start, lastPaymentDate: null, lastPaymentId: null,
+      totalInterestPaid: 0, totalCapitalPaid: 0, totalMoraPaid: 0, moraPaid: 0, moraWaived: 0,
+      status: 'activo', createdBy: me.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      ...(renew ? { renewedFrom: renew.id, carriedOver: carried } : {})
+    };
+    const data = p.type === 'reditos'
+      ? { ...base, rateWeekly: p.rateWeekly, capitalBalance: p.principal }
+      : { ...base, freq: p.freq, n: p.n, ratePeriod: p.ratePeriod, method: p.method, skipSundays: p.skipSundays, capitalBalance: p.principal,
+          schedule: buildSchedule({ principal: p.principal, rate: p.ratePeriod, n: p.n, freq: p.freq, method: p.method, start: p.start, skipSundays: p.skipSundays }) };
+    const btn = $s('#lsave'); btn.disabled = true;
     try {
-      const ref = await addDoc(collection(db, 'loans'), {
-        clientId: c.id, clientName: c.name, clientPhone: c.phone || '', collectorId: c.collectorId || me.uid,
-        principal: a, rateWeekly: r, startDate: start, capitalBalance: a, accruedInterest: 0, lastCalcDate: start,
-        lastPaymentDate: null, lastPaymentId: null, totalInterestPaid: 0, totalCapitalPaid: 0,
-        status: 'activo', createdBy: me.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
-      });
-      closeModal(); toast('Préstamo creado'); openLoan(ref.id);
-    } catch (e) { toast(errMsg(e)); }
+      const ref = doc(collection(db, 'loans'));
+      const b = writeBatch(db);
+      b.set(ref, data);
+      if (renew) b.update(doc(db, 'loans', renew.id), { status: 'renovado', renewedTo: ref.id, renewedAmount: carried, updatedAt: serverTimestamp() });
+      await b.commit();
+      if (cash > 0) await cashMove({ type: 'desembolso', amount: cash, uid: me.uid, loanId: ref.id, clientName: c.name, note: renew ? 'Renovación' : 'Préstamo nuevo' });
+      closeModal(); toast(renew ? 'Préstamo renovado' : 'Préstamo creado'); openLoan(ref.id);
+    } catch (e) { toast(errMsg(e)); btn.disabled = false; }
   };
 }
 
-// ---------- CUADRE ----------
-async function viewCuadre(date = todayStr()) {
-  const pays = rows(await getDocs(qPaysByDate(date))).sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
-  const ok = pays.filter(p => !p.anulado);
-  const by = {};
-  ok.forEach(p => { const k = p.byName || '—'; by[k] = by[k] || { n: 0, amount: 0, i: 0, c: 0 }; by[k].n++; by[k].amount += p.amount; by[k].i += p.toInterest; by[k].c += p.toCapital; });
-  const tot = ok.reduce((t, p) => ({ amount: t.amount + p.amount, i: t.i + p.toInterest, c: t.c + p.toCapital }), { amount: 0, i: 0, c: 0 });
-  view.innerHTML = `<h2>Cuadre de caja</h2>
-    <input id="cd" type="date" value="${date}">
-    <div class="card"><div class="row"><span>Total cobrado</span><span class="big">${money(tot.amount)}</span></div>
-      <div class="row mute"><span>Interés ${money(tot.i)}</span><span>Capital ${money(tot.c)}</span><span>${ok.length} pagos</span></div></div>
-    ${isAdmin() ? `<h3>Por cobrador</h3><div class="card"><table><tr><th>Cobrador</th><th class="n">Pagos</th><th class="n">Total</th></tr>
-      ${Object.entries(by).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${v.n}</td><td class="n"><b>${money(v.amount)}</b></td></tr>`).join('') || '<tr><td colspan="3" class="mute">Sin pagos</td></tr>'}</table></div>` : ''}
-    <h3>Pagos</h3>
-    ${pays.length ? pays.map(p => `<div class="card tap" data-id="${p.id}" style="${p.anulado ? 'opacity:.5' : ''}">
+// ---------- CAJA (cuadre, gastos, entregas) ----------
+async function viewCaja(date = todayStr(), who = isAdmin() ? 'all' : me.uid) {
+  const [pays, moves] = await Promise.all([getDocs(qPaysByDate(date)), getDocs(qMovesByDate(date))]);
+  const P = rows(pays).filter(p => who === 'all' || p.byUid === who).sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+  const M = rows(moves).filter(m => who === 'all' || m.uid === who);
+  const ok = P.filter(p => !p.anulado);
+  const s = (arr, f) => r2(arr.reduce((t, x) => t + (f(x) || 0), 0));
+  const cobrado = s(ok, p => p.amount), efectivo = s(ok.filter(p => (p.method || 'efectivo') === 'efectivo'), p => p.amount);
+  const tm = t => s(M.filter(m => m.type === t), m => m.amount);
+  const entregas = tm('entrega'), gastos = tm('gasto'), desemb = tm('desembolso'), devol = tm('devolucion');
+  const enMano = r2(entregas + efectivo - gastos - desemb - devol);
+  const label = { entrega: 'Entrega de efectivo', gasto: 'Gasto', desembolso: 'Préstamo entregado', devolucion: 'Efectivo devuelto' };
+  view.innerHTML = `<h2>Caja</h2>
+    <div class="grid"><input id="cd" type="date" value="${date}">
+      ${isAdmin() ? `<select id="cw"><option value="all">Todos</option>${usersCache.map(u => `<option value="${u.id}" ${u.id === who ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>` : '<div></div>'}</div>
+    <div class="card">
+      <div class="row"><span>Cobrado</span><b>${money(cobrado)}</b></div>
+      <div class="row mute"><span>En efectivo</span><span>${money(efectivo)}</span></div>
+      <div class="row mute"><span>Transferencia / otro</span><span>${money(cobrado - efectivo)}</span></div>
+      <div class="row"><span>+ Efectivo recibido de la oficina</span><b>${money(entregas)}</b></div>
+      <div class="row"><span>− Gastos</span><b>${money(gastos)}</b></div>
+      <div class="row"><span>− Préstamos entregados</span><b>${money(desemb)}</b></div>
+      <div class="row"><span>− Efectivo devuelto a la oficina</span><b>${money(devol)}</b></div>
+      <hr style="border:0;border-top:1px solid var(--line)">
+      <div class="row"><span><b>Efectivo que debe tener en mano</b></span><span class="big">${money(enMano)}</span></div>
+    </div>
+    <div class="btns"><button class="btn sec" id="mg">➖ Gasto</button>${isAdmin() ? '<button class="btn sec" id="me">➕ Entrega</button><button class="btn sec" id="md">↩️ Devolución</button>' : ''}</div>
+    <h3>Pagos (${ok.length})</h3>
+    ${P.length ? P.map(p => `<div class="card tap" data-id="${p.id}" style="${p.anulado ? 'opacity:.5' : ''}">
       <div class="row"><b>${esc(p.clientName)}</b><b>${money(p.amount)}</b></div>
-      <div class="mute">Interés ${money(p.toInterest)} · Capital ${money(p.toCapital)} · ${esc(p.byName)}${p.anulado ? ' · ANULADO' : ''}</div></div>`).join('')
-      : '<div class="empty">No hay pagos en esta fecha.</div>'}`;
-  $('#cd').onchange = e => { view.innerHTML = '<div class="empty">Cargando…</div>'; viewCuadre(e.target.value).catch(err => toast(errMsg(err))); };
-  view.querySelectorAll('[data-id]').forEach(el => el.onclick = () => showReceipt(pays.find(p => p.id === el.dataset.id)));
+      <div class="mute">${METHODS[p.method] || 'Efectivo'} · Interés ${money((p.toInterest || 0) + (p.toMora || 0))} · Capital ${money(p.toCapital)} · ${esc(p.byName)}${p.anulado ? ' · ANULADO' : ''}</div></div>`).join('')
+      : '<div class="empty">No hay pagos en esta fecha.</div>'}
+    <h3>Movimientos de caja</h3>
+    ${M.length ? M.map(m => `<div class="card"><div class="row"><b>${label[m.type] || m.type}</b><b>${money(m.amount)}</b></div>
+      <div class="mute">${esc([m.category, m.clientName, m.note].filter(Boolean).join(' · '))} · ${esc(m.personName || collectorName(m.uid))}</div>
+      ${isAdmin() ? `<button class="btn warn sm" data-del="${m.id}">Borrar</button>` : ''}</div>`).join('')
+      : '<div class="empty">Sin movimientos.</div>'}`;
+  const reload = () => viewCaja($('#cd').value, $('#cw') ? $('#cw').value : who).catch(e => toast(errMsg(e)));
+  $('#cd').onchange = reload; if ($('#cw')) $('#cw').onchange = reload;
+  view.querySelectorAll('[data-id]').forEach(el => el.onclick = () => showReceipt(P.find(p => p.id === el.dataset.id)));
+  view.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('¿Borrar este movimiento?')) return;
+    await deleteDoc(doc(db, 'cashmoves', b.dataset.del)); toast('Borrado'); reload();
+  });
+  const moveForm = type => {
+    const people = isAdmin() ? usersCache : [{ id: me.uid, name: me.name }];
+    const sh = openModal(`<h2>${label[type]}</h2>
+      ${isAdmin() ? `<label>${type === 'gasto' ? 'Quién hizo el gasto' : 'Cobrador'}</label><select id="mw">${people.map(u => `<option value="${u.id}" ${u.id === (who === 'all' ? me.uid : who) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>` : ''}
+      <label>Monto (RD$)</label><input id="ma" type="number" inputmode="decimal" step="0.01">
+      ${type === 'gasto' ? `<label>Categoría</label><select id="mc"><option>Combustible</option><option>Transporte</option><option>Comida</option><option>Teléfono / recarga</option><option>Papelería</option><option>Pago a empleado</option><option>Otro</option></select>` : ''}
+      <label>Nota</label><input id="mn">
+      <button class="btn" id="ms">Guardar</button>`);
+    sh.querySelector('#ms').onclick = async () => {
+      const amount = r2(parseFloat(sh.querySelector('#ma').value));
+      if (!(amount > 0)) return toast('Escribe el monto');
+      const uid = sh.querySelector('#mw') ? sh.querySelector('#mw').value : me.uid;
+      try {
+        await cashMove({ type, amount, uid, personName: (usersCache.find(u => u.id === uid) || me).name, date: $('#cd').value || todayStr(),
+          category: sh.querySelector('#mc') ? sh.querySelector('#mc').value : '', note: sh.querySelector('#mn').value.trim() });
+        closeModal(); toast('Guardado'); reload();
+      } catch (e) { toast(errMsg(e)); }
+    };
+  };
+  $('#mg').onclick = () => moveForm('gasto');
+  if ($('#me')) $('#me').onclick = () => moveForm('entrega');
+  if ($('#md')) $('#md').onclick = () => moveForm('devolucion');
 }
 
-// ---------- EQUIPO (admin) ----------
+// ---------- MÁS (admin) ----------
+async function viewMas() {
+  view.innerHTML = `<h2>Más</h2>
+    <div class="card tap" id="mRep"><b>📊 Reportes</b><div class="mute">Ganancias, cobros y gastos por fechas</div></div>
+    <div class="card tap" id="mExp"><b>📥 Exportar a Excel</b><div class="mute">Clientes, préstamos, pagos y caja (copia de seguridad)</div></div>
+    <div class="card tap" id="mQuo"><b>🧮 Cotizar préstamo</b><div class="mute">Calcula cuotas sin guardar nada</div></div>
+    <div class="card tap" id="mEq"><b>👥 Equipo</b><div class="mute">Cobradores y administradores</div></div>
+    <div class="card tap" id="mNeg"><b>🏢 Negocio y contrato</b><div class="mute">Nombre, datos del prestamista, mora por defecto</div></div>
+    <div class="card tap" id="mHist"><b>📁 Préstamos cerrados</b><div class="mute">Saldados, renovados e incobrables</div></div>`;
+  $('#mRep').onclick = () => viewReportes().catch(e => toast(errMsg(e)));
+  $('#mExp').onclick = exportAll;
+  $('#mQuo').onclick = () => loanForm({ name: '' }, { quote: true });
+  $('#mEq').onclick = () => viewEquipo().catch(e => toast(errMsg(e)));
+  $('#mNeg').onclick = negocioForm;
+  $('#mHist').onclick = () => viewClosed().catch(e => toast(errMsg(e)));
+}
+
+async function viewClosed() {
+  const loans = rows(await getDocs(query(collection(db, 'loans'), where('status', 'in', ['saldado', 'renovado', 'castigado']))))
+    .sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
+  view.innerHTML = `<button class="btn sec sm" id="back">← Más</button><h2>Préstamos cerrados (${loans.length})</h2>
+    ${loans.map(L => `<div class="card tap" data-id="${L.id}"><div class="row"><b>${esc(L.clientName)}</b><span class="badge ${L.status === 'castigado' ? 'bad' : 'done'}">${L.status}</span></div>
+      <div class="mute">${money(L.principal)} · ${esc(typeLabel(L))} · ${fdate(L.startDate)} · Ganado ${money((L.totalInterestPaid || 0) + (L.totalMoraPaid || 0))}</div></div>`).join('') || '<div class="empty">Ninguno todavía.</div>'}`;
+  $('#back').onclick = () => go('mas');
+  view.querySelectorAll('[data-id]').forEach(el => el.onclick = () => openLoan(el.dataset.id));
+}
+
+async function viewReportes(from, to) {
+  const today = todayStr();
+  from = from || today.slice(0, 8) + '01'; to = to || today;
+  const [ps, ms, ls] = await Promise.all([
+    getDocs(query(collection(db, 'payments'), where('date', '>=', from), where('date', '<=', to))),
+    getDocs(query(collection(db, 'cashmoves'), where('date', '>=', from), where('date', '<=', to))),
+    getDocs(query(collection(db, 'loans'), where('status', '==', 'activo')))
+  ]);
+  const P = rows(ps).filter(p => !p.anulado), M = rows(ms), L = rows(ls);
+  const s = (a, k) => r2(a.reduce((t, x) => t + (x[k] || 0), 0));
+  const gastos = s(M.filter(m => m.type === 'gasto'), 'amount'), desemb = s(M.filter(m => m.type === 'desembolso'), 'amount');
+  const interes = s(P, 'toInterest'), mora = s(P, 'toMora');
+  let capital = 0, vencido = 0, late = 0; L.forEach(x => { const st = loanStatus(x, today); capital += st.capital; vencido += st.dueNow; if (st.late) late++; });
+  const byCol = {}; P.forEach(p => { const k = p.byName || '—'; byCol[k] = (byCol[k] || 0) + p.amount; });
+  const byCat = {}; M.filter(m => m.type === 'gasto').forEach(m => { const k = m.category || 'Otro'; byCat[k] = (byCat[k] || 0) + m.amount; });
+  view.innerHTML = `<button class="btn sec sm" id="back">← Más</button><h2>Reportes</h2>
+    <div class="grid"><div><label>Desde</label><input id="rf" type="date" value="${from}"></div><div><label>Hasta</label><input id="rt" type="date" value="${to}"></div></div>
+    <div class="grid">
+      <div class="stat"><span>Total cobrado</span><b>${money(s(P, 'amount'))}</b></div>
+      <div class="stat"><span>Pagos</span><b>${P.length}</b></div>
+      <div class="stat"><span>Interés cobrado</span><b>${money(interes)}</b></div>
+      <div class="stat"><span>Mora cobrada</span><b>${money(mora)}</b></div>
+      <div class="stat"><span>Capital recuperado</span><b>${money(s(P, 'toCapital'))}</b></div>
+      <div class="stat"><span>Dinero prestado</span><b>${money(desemb)}</b></div>
+      <div class="stat"><span>Gastos</span><b>${money(gastos)}</b></div>
+      <div class="stat"><span>Ganancia neta</span><b style="color:var(--green)">${money(interes + mora - gastos)}</b></div>
+    </div>
+    <h3>Cartera hoy</h3>
+    <div class="grid">
+      <div class="stat"><span>Capital en la calle</span><b>${money(capital)}</b></div>
+      <div class="stat"><span>Vencido por cobrar</span><b>${money(vencido)}</b></div>
+      <div class="stat"><span>Préstamos activos</span><b>${L.length}</b></div>
+      <div class="stat"><span>Atrasados</span><b>${late}</b></div>
+    </div>
+    <h3>Cobrado por persona</h3><div class="card"><table>${Object.entries(byCol).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${money(v)}</td></tr>`).join('') || '<tr><td class="mute">Sin pagos</td></tr>'}</table></div>
+    <h3>Gastos por categoría</h3><div class="card"><table>${Object.entries(byCat).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${money(v)}</td></tr>`).join('') || '<tr><td class="mute">Sin gastos</td></tr>'}</table></div>
+    <button class="btn sec" id="rexp">📥 Exportar pagos y caja de estas fechas</button>`;
+  $('#back').onclick = () => go('mas');
+  const re = () => viewReportes($('#rf').value, $('#rt').value).catch(e => toast(errMsg(e)));
+  $('#rf').onchange = re; $('#rt').onchange = re;
+  $('#rexp').onclick = () => {
+    downloadCsv(`pagos_${from}_${to}.csv`, ['Fecha', 'Cliente', 'Monto', 'Mora', 'Interés', 'Capital', 'Forma', 'Cobrado por', 'Nota'],
+      P.map(p => [p.date, p.clientName, p.amount, p.toMora || 0, p.toInterest, p.toCapital, METHODS[p.method] || 'Efectivo', p.byName, p.note]));
+    downloadCsv(`caja_${from}_${to}.csv`, ['Fecha', 'Tipo', 'Monto', 'Categoría', 'Persona', 'Cliente', 'Nota'],
+      M.map(m => [m.date, m.type, m.amount, m.category || '', m.personName || collectorName(m.uid), m.clientName || '', m.note || '']));
+  };
+}
+
+async function exportAll() {
+  toast('Preparando archivos…');
+  try {
+    const [cs, ls, ps, ms] = await Promise.all([getDocs(collection(db, 'clients')), getDocs(collection(db, 'loans')), getDocs(collection(db, 'payments')), getDocs(collection(db, 'cashmoves'))]);
+    const today = todayStr();
+    downloadCsv(`clientes_${today}.csv`, ['Nombre', 'Cédula', 'Teléfono', 'Dirección', 'Trabajo', 'Garante', 'Cobrador', 'Lista negra', 'Notas'],
+      rows(cs).map(c => [c.name, c.cedula, c.phone, c.address, c.work, c.guarantor, collectorName(c.collectorId), c.blacklist ? 'Sí' : '', c.notes]));
+    downloadCsv(`prestamos_${today}.csv`, ['Cliente', 'Tipo', 'Prestado', 'Fecha', 'Tasa', 'Estado', 'Capital pendiente', 'Debe hoy', 'Saldo total', 'Mora pendiente', 'Interés cobrado', 'Mora cobrada', 'Garantía'],
+      rows(ls).map(L => { const st = loanStatus(L, today); const act = L.status === 'activo';
+        return [L.clientName, L.type === 'cuotas' ? 'Cuotas' : 'Réditos', L.principal, L.startDate, L.type === 'cuotas' ? pct(L.ratePeriod) + ' x cuota' : pct(L.rateWeekly) + ' semanal', L.status,
+          act ? st.capital : 0, act ? st.dueNow : 0, act ? st.total : 0, act ? st.moraDue : 0, L.totalInterestPaid || 0, L.totalMoraPaid || 0, L.collateral || '']; }));
+    downloadCsv(`pagos_todos_${today}.csv`, ['Fecha', 'Cliente', 'Monto', 'Mora', 'Interés', 'Capital', 'Forma', 'Cobrado por', 'Anulado'],
+      rows(ps).map(p => [p.date, p.clientName, p.amount, p.toMora || 0, p.toInterest, p.toCapital, METHODS[p.method] || 'Efectivo', p.byName, p.anulado ? 'Sí' : '']));
+    downloadCsv(`caja_todo_${today}.csv`, ['Fecha', 'Tipo', 'Monto', 'Categoría', 'Persona', 'Cliente', 'Nota'],
+      rows(ms).map(m => [m.date, m.type, m.amount, m.category || '', m.personName || collectorName(m.uid), m.clientName || '', m.note || '']));
+  } catch (e) { toast(errMsg(e)); }
+}
+
+function negocioForm() {
+  const S = settings, dm = S.defaultMora || { type: 'none', value: 0, grace: 0 };
+  const sh = openModal(`<h2>Negocio y contrato</h2>
+    <label>Nombre del negocio (sale en recibos)</label><input id="bn" value="${esc(S.businessName)}">
+    <h3>Datos del prestamista (para el contrato)</h3>
+    <label>Nombre completo</label><input id="bl" value="${esc(S.lenderName)}">
+    <label>Cédula</label><input id="bc" value="${esc(S.lenderCedula)}">
+    <label>Dirección</label><input id="ba" value="${esc(S.lenderAddress)}">
+    <label>Ciudad / municipio</label><input id="bci" value="${esc(S.city)}" placeholder="Ej. Tamboril, Santiago">
+    <h3>Mora por defecto en préstamos nuevos</h3>
+    <div class="grid"><select id="bmt"><option value="none">Sin mora</option><option value="fijo">RD$ por día</option><option value="pct">% por día</option></select>
+      <input id="bmv" type="number" step="0.01" placeholder="Valor" value="${dm.value || ''}"></div>
+    <label>Días de gracia</label><input id="bmg" type="number" value="${dm.grace || 0}">
+    <button class="btn" id="bsave">Guardar</button>`);
+  sh.querySelector('#bmt').value = dm.type || 'none';
+  sh.querySelector('#bsave').onclick = async () => {
+    const v = id => sh.querySelector(id).value.trim();
+    settings = { ...settings, businessName: v('#bn') || 'Préstamos 4Squina', lenderName: v('#bl'), lenderCedula: v('#bc'), lenderAddress: v('#ba'), city: v('#bci'),
+      defaultMora: { type: v('#bmt'), value: parseFloat(v('#bmv')) || 0, grace: parseInt(v('#bmg'), 10) || 0 } };
+    try { await setDoc(doc(db, 'meta', 'settings'), settings, { merge: true }); $('#bizName').textContent = settings.businessName; closeModal(); toast('Guardado'); }
+    catch (e) { toast(errMsg(e)); }
+  };
+}
+
 async function viewEquipo() {
   await loadUsers();
-  view.innerHTML = `<h2>Equipo</h2>
+  view.innerHTML = `<button class="btn sec sm" id="back">← Más</button><h2>Equipo</h2>
     <div class="card">${usersCache.map(u => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
       <div><b>${esc(u.name)}</b><div class="mute">${u.role === 'admin' ? 'Administrador' : 'Cobrador'}${u.active === false ? ' · <span style="color:var(--red)">desactivado</span>' : ''}</div></div>
       ${u.id !== me.uid ? `<button class="btn sm sec" data-tog="${u.id}">${u.active === false ? 'Activar' : 'Desactivar'}</button>` : '<span class="mute">Tú</span>'}
@@ -688,10 +1161,8 @@ async function viewEquipo() {
       <label>Código de acceso (6 a 10 números)</label><input id="up" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="10" autocomplete="off">
       <label>Rol</label><select id="ur"><option value="cobrador">Cobrador (solo ve sus clientes)</option><option value="admin">Administrador (ve todo)</option></select>
       <button class="btn" id="uadd">Crear cuenta</button>
-    </div>
-    <h3>Negocio</h3>
-    <div class="card"><label>Nombre del negocio (sale en los recibos)</label><input id="bn" value="${esc(settings.businessName)}">
-      <button class="btn sec" id="bsave">Guardar</button></div>`;
+    </div>`;
+  $('#back').onclick = () => go('mas');
   view.querySelectorAll('[data-tog]').forEach(b => b.onclick = async () => {
     const u = usersCache.find(x => x.id === b.dataset.tog);
     await updateDoc(doc(db, 'users', u.id), { active: u.active === false });
@@ -709,11 +1180,6 @@ async function viewEquipo() {
       await signOut(auth2);
       toast(`Cuenta creada. ${name} entra con su código.`); viewEquipo();
     } catch (e) { toast(errMsg(e)); $('#uadd').disabled = false; }
-  };
-  $('#bsave').onclick = async () => {
-    settings.businessName = $('#bn').value.trim() || 'Préstamos 4Squina';
-    await setDoc(doc(db, 'meta', 'settings'), settings, { merge: true });
-    $('#bizName').textContent = settings.businessName; toast('Guardado');
   };
 }
 </script>
