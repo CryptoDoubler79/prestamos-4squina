@@ -104,10 +104,16 @@ function reditosStatus(L, asOf) {
     total: r2(interestDue + moraDue + L.capitalBalance),
     dueNow: r2(interestDue + moraDue),
     daily: r2(L.capitalBalance * L.rateWeekly / 7), weekly: r2(L.capitalBalance * L.rateWeekly),
-    daysSincePay, daysLate: Math.max(0, daysSincePay - 7),
-    late: daysSincePay > 7 && interestDue > 0,
+    daysSincePay,
+    daysLate: Math.max(daysSincePay - 7, matured(L, asOf) ? daysBetween(L.maturityDate, asOf) : 0, 0),
+    late: (daysSincePay > 7 && interestDue > 0) || matured(L, asOf),
+    maturityDate: L.maturityDate || null,
+    matured: matured(L, asOf),
+    daysToMaturity: L.maturityDate ? daysBetween(asOf, L.maturityDate) : null,
   };
 }
+// Réditos con plazo: el capital vence en maturityDate
+const matured = (L, asOf) => !!L.maturityDate && asOf > L.maturityDate && L.capitalBalance > 0;
 
 function cuotasStatus(L, asOf) {
   let moraTotal = 0, balance = 0, capital = 0, interestLeft = 0, overdue = 0, overdueCount = 0, lateCount = 0, daysLate = 0, next = null, paidCount = 0;
@@ -246,3 +252,28 @@ export function validCedula(s) {
   }
   return (10 - (sum % 10)) % 10 === Number(d[10]);
 }
+
+// ---------- plazo (1 a 3 meses, o el que se elija) ----------
+// Cuántas cuotas caben en un plazo de X meses según la frecuencia
+export function cuotasForTerm(start, freq, months, skipSundays = false) {
+  months = Math.max(1, Math.floor(months));
+  if (freq === 'mensual') return months;
+  if (freq === 'quincenal') return months * 2;
+  if (freq === 'semanal') return months * 4;
+  const end = addMonths(start, months);
+  let n = 0, cur = start;
+  while (true) { cur = nextDueDate(cur, 'diario', skipSundays); if (cur > end) break; n++; }
+  return n;
+}
+// Convierte la forma de decir el interés a "% por cuota" (método plano)
+// mode: 'mensual' (% al mes), 'total' (% sobre todo el préstamo), 'cuota' (% por cuota)
+export function ratePerCuota(mode, value, months, n) {
+  const v = (Number(value) || 0) / 100;
+  if (!(n > 0)) return 0;
+  if (mode === 'mensual') return v * months / n;
+  if (mode === 'total') return v / n;
+  return v;
+}
+// Para el método francés: tasa por período a partir de una tasa mensual
+export const PERIOD_DAYS = { diario: 1, semanal: 7, quincenal: 15, mensual: 30 };
+export function monthlyToPeriod(monthly, freq) { return monthly * PERIOD_DAYS[freq] / 30; }
