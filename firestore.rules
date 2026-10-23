@@ -1,0 +1,58 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function ownerDoc() { return /databases/$(db)/documents/meta/owner; }
+    function userDoc() { return /databases/$(db)/documents/users/$(request.auth.uid); }
+    function isOwner() {
+      return signedIn() && exists(ownerDoc()) && get(ownerDoc()).data.uid == request.auth.uid;
+    }
+    function isUser() {
+      return signedIn() && exists(userDoc()) && get(userDoc()).data.active == true;
+    }
+    function isAdmin() { return isOwner() || (isUser() && get(userDoc()).data.role == 'admin'); }
+    function isCollector() { return isUser() && get(userDoc()).data.role == 'cobrador'; }
+
+    // Dueño: solo se puede crear una vez (la primera cuenta)
+    match /meta/owner {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+    match /meta/settings {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /users/{uid} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+
+    match /clients/{id} {
+      allow read: if isAdmin() || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow write: if isAdmin();
+    }
+
+    match /loans/{id} {
+      allow read: if isAdmin() || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        isCollector()
+        && resource.data.collectorId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'capitalBalance', 'accruedInterest', 'lastCalcDate', 'lastPaymentDate',
+          'lastPaymentId', 'totalInterestPaid', 'totalCapitalPaid', 'status', 'updatedAt'
+        ])
+      );
+    }
+
+    match /payments/{id} {
+      allow read: if isAdmin() || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create: if isAdmin() || (isCollector() && request.resource.data.collectorId == request.auth.uid
+                                     && request.resource.data.byUid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+  }
+}

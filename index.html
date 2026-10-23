@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f3d2e">
+<title>Préstamos 4Squina</title>
+<style>
+:root{--bg:#f4f6f5;--card:#fff;--ink:#14201b;--mute:#66736d;--line:#dfe5e2;--pri:#0f3d2e;--pri2:#1c6b4f;--acc:#d9a521;--red:#c0392b;--green:#1e8a4c;--r:14px}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:76px}
+header{background:var(--pri);color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:5}
+header h1{font-size:17px;margin:0;letter-spacing:.3px}
+header small{opacity:.75;display:block;font-size:12px}
+header button{background:transparent;border:1px solid #ffffff55;color:#fff;border-radius:10px;padding:6px 10px;font-size:13px}
+main{padding:14px 16px;max-width:760px;margin:0 auto}
+nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--line);display:flex;padding-bottom:env(safe-area-inset-bottom);z-index:5}
+nav button{flex:1;border:0;background:none;padding:10px 2px 12px;font-size:12px;color:var(--mute)}
+nav button b{display:block;font-size:19px;line-height:1.2}
+nav button.on{color:var(--pri);font-weight:600}
+h2{font-size:19px;margin:6px 0 12px}
+h3{font-size:15px;margin:16px 0 8px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:10px}
+.tap{cursor:pointer}
+.tap:active{background:#eef3f0}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+.stat span{display:block;color:var(--mute);font-size:12px}
+.stat b{font-size:18px}
+.big{font-size:20px;font-weight:700}
+.mute{color:var(--mute);font-size:13px}
+.badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#e6efe9;color:var(--pri2)}
+.badge.late{background:#fbe5e2;color:var(--red)}
+.badge.done{background:#e3eefb;color:#2563a8}
+.badge.bad{background:#eee;color:#555}
+input,select,textarea{width:100%;font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;margin:4px 0 10px}
+label{font-size:13px;color:var(--mute)}
+.btn{display:inline-block;border:0;border-radius:11px;padding:12px 16px;font:inherit;font-weight:600;background:var(--pri);color:#fff;width:100%;margin-top:4px}
+.btn.sec{background:#e6efe9;color:var(--pri)}
+.btn.warn{background:#fbe5e2;color:var(--red)}
+.btn.sm{width:auto;padding:8px 12px;font-size:13px}
+.btns{display:flex;gap:8px;margin-top:8px}
+.btns .btn{flex:1}
+.modal{position:fixed;inset:0;background:#0007;display:flex;align-items:flex-end;justify-content:center;z-index:20}
+.sheet{background:var(--bg);width:100%;max-width:760px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:16px 16px 30px}
+.sheet .x{float:right;border:0;background:#e6efe9;border-radius:50%;width:32px;height:32px;font-size:18px}
+.chips{display:flex;gap:8px;margin:4px 0 10px}
+.chip{flex:1;text-align:center;padding:10px;border:2px solid var(--line);border-radius:11px;background:#fff;font-weight:700}
+.chip.on{border-color:var(--pri);background:#e6efe9;color:var(--pri)}
+.split{background:#fff;border:1px dashed var(--pri2);border-radius:10px;padding:10px;font-size:14px;margin-bottom:8px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:90px;background:#14201b;color:#fff;padding:10px 16px;border-radius:10px;z-index:30;font-size:14px;max-width:90%}
+.center{text-align:center}
+.login{max-width:380px;margin:40px auto}
+.login .logo{font-size:44px;text-align:center}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{padding:7px 4px;border-bottom:1px solid var(--line);text-align:left}
+td.n,th.n{text-align:right}
+.empty{text-align:center;color:var(--mute);padding:30px 10px}
+pre.receipt{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;white-space:pre-wrap;font:14px/1.45 ui-monospace,Menlo,monospace}
+</style>
+</head>
+<body>
+<header id="hdr" hidden>
+  <div><h1 id="bizName">Préstamos 4Squina</h1><small id="whoami"></small></div>
+  <button id="logout">Salir</button>
+</header>
+<main id="view"><div class="empty">Cargando…</div></main>
+<nav id="nav" hidden></nav>
+<div id="modalRoot"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { r2, todayStr, daysBetween, loanStatus, applyPayment } from "./loancalc.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
+  authDomain: "squina-prestamos.firebaseapp.com",
+  projectId: "squina-prestamos",
+  storageBucket: "squina-prestamos.firebasestorage.app",
+  messagingSenderId: "127306438469",
+  appId: "1:127306438469:web:182e3f996ba3390319d02c"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+// App secundaria para crear cobradores sin cerrar la sesión del admin
+const app2 = initializeApp(firebaseConfig, "secundaria");
+const auth2 = getAuth(app2);
+
+// ---------- utilidades ----------
+const $ = s => document.querySelector(s);
+const view = $('#view');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = n => 'RD$' + Number(n || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = r => (Math.round(r * 1000) / 10) + '%';
+const fdate = s => { if (!s) return ''; const [y, m, d] = s.split('-'); return `${d}/${m}/${y}`; };
+function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2800); }
+function errMsg(e) {
+  const c = e && e.code || '';
+  if (c.includes('permission-denied')) return 'Sin permiso para esta acción.';
+  if (c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found')) return 'Correo o contraseña incorrectos.';
+  if (c.includes('email-already-in-use')) return 'Ese correo ya tiene cuenta.';
+  if (c.includes('weak-password')) return 'La contraseña debe tener al menos 6 caracteres.';
+  if (c.includes('unavailable')) return 'Sin conexión. Intenta de nuevo cuando tengas internet.';
+  return e && e.message || 'Error';
+}
+function openModal(html) {
+  const root = $('#modalRoot');
+  root.innerHTML = `<div class="modal"><div class="sheet"><button class="x" data-close>×</button>${html}</div></div>`;
+  root.querySelector('.modal').addEventListener('click', e => { if (e.target.classList.contains('modal') || e.target.hasAttribute('data-close')) closeModal(); });
+  return root.querySelector('.sheet');
+}
+const closeModal = () => { $('#modalRoot').innerHTML = ''; };
+
+// ---------- estado ----------
+let me = null;           // {uid, name, email, role, owner}
+let settings = { businessName: 'Préstamos 4Squina' };
+let usersCache = [];
+let tab = 'inicio';
+const isAdmin = () => me && (me.owner || me.role === 'admin');
+
+// ---------- consultas ----------
+const qLoansActive = () => isAdmin()
+  ? query(collection(db, 'loans'), where('status', '==', 'activo'))
+  : query(collection(db, 'loans'), where('collectorId', '==', me.uid), where('status', '==', 'activo'));
+const qLoansByClient = cid => isAdmin()
+  ? query(collection(db, 'loans'), where('clientId', '==', cid))
+  : query(collection(db, 'loans'), where('collectorId', '==', me.uid), where('clientId', '==', cid));
+const qClients = () => isAdmin()
+  ? collection(db, 'clients')
+  : query(collection(db, 'clients'), where('collectorId', '==', me.uid));
+const qPaysByDate = d => isAdmin()
+  ? query(collection(db, 'payments'), where('date', '==', d))
+  : query(collection(db, 'payments'), where('collectorId', '==', me.uid), where('date', '==', d));
+const qPaysFrom = d => query(collection(db, 'payments'), where('date', '>=', d));
+const qPaysByLoan = lid => isAdmin()
+  ? query(collection(db, 'payments'), where('loanId', '==', lid))
+  : query(collection(db, 'payments'), where('collectorId', '==', me.uid), where('loanId', '==', lid));
+const rows = snap => snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+async function loadUsers() {
+  if (!isAdmin()) return [];
+  usersCache = rows(await getDocs(collection(db, 'users')));
+  return usersCache;
+}
+const collectorName = id => (usersCache.find(u => u.id === id) || {}).name || (id === me.uid ? me.name : '—');
+
+// ---------- autenticación ----------
+onAuthStateChanged(auth, async u => {
+  if (!u) { me = null; showLogin(); return; }
+  try {
+    const [ownSnap, userSnap] = await Promise.all([getDoc(doc(db, 'meta', 'owner')), getDoc(doc(db, 'users', u.uid))]);
+    const owner = ownSnap.exists() && ownSnap.data().uid === u.uid;
+    let ud = userSnap.exists() ? userSnap.data() : null;
+    if (owner && !ud) {
+      ud = { name: 'Dueño', email: u.email, role: 'admin', active: true, createdAt: serverTimestamp() };
+      await setDoc(doc(db, 'users', u.uid), ud);
+    }
+    if (!ud || ud.active === false) {
+      view.innerHTML = `<div class="login card center"><p>Esta cuenta no tiene acceso. Pide al administrador que la active.</p><button class="btn" id="out">Salir</button></div>`;
+      $('#out').onclick = () => signOut(auth);
+      return;
+    }
+    me = { uid: u.uid, email: u.email, name: ud.name, role: ud.role, owner };
+    try { const s = await getDoc(doc(db, 'meta', 'settings')); if (s.exists()) settings = { ...settings, ...s.data() }; } catch (_) {}
+    await loadUsers();
+    startApp();
+  } catch (e) { view.innerHTML = `<div class="card">Error: ${esc(errMsg(e))}</div>`; }
+});
+
+function showLogin(mode = 'login') {
+  $('#hdr').hidden = true; $('#nav').hidden = true;
+  const first = mode === 'owner';
+  view.innerHTML = `<div class="login">
+    <div class="logo">💰</div>
+    <h2 class="center">${esc(settings.businessName)}</h2>
+    <div class="card">
+      ${first ? `<p class="mute">Crea la cuenta del dueño. Solo se puede hacer una vez; la primera cuenta creada será el administrador principal.</p>
+      <label>Tu nombre</label><input id="lname" autocomplete="name">` : ''}
+      <label>Correo</label><input id="lemail" type="email" autocomplete="username">
+      <label>Contraseña</label><input id="lpass" type="password" autocomplete="${first ? 'new-password' : 'current-password'}">
+      <button class="btn" id="lgo">${first ? 'Crear cuenta de dueño' : 'Entrar'}</button>
+      <p class="center mute" style="margin-top:14px"><a href="#" id="lswitch">${first ? 'Ya tengo cuenta' : 'Primera vez: crear cuenta de dueño'}</a></p>
+    </div></div>`;
+  $('#lswitch').onclick = e => { e.preventDefault(); showLogin(first ? 'login' : 'owner'); };
+  $('#lgo').onclick = async () => {
+    const email = $('#lemail').value.trim(), pass = $('#lpass').value;
+    $('#lgo').disabled = true;
+    try {
+      if (!first) { await signInWithEmailAndPassword(auth, email, pass); return; }
+      const cred = await createUserWithEmailAndPassword(auth, email, pass);
+      try {
+        await setDoc(doc(db, 'meta', 'owner'), { uid: cred.user.uid, createdAt: serverTimestamp() });
+        await setDoc(doc(db, 'users', cred.user.uid), { name: $('#lname').value.trim() || 'Dueño', email, role: 'admin', active: true, createdAt: serverTimestamp() });
+        location.reload();
+      } catch (e) {
+        await cred.user.delete().catch(() => {});
+        alert('Ya existe un dueño registrado. Pide al dueño que te cree una cuenta.');
+      }
+    } catch (e) { alert(errMsg(e)); }
+    finally { const b = $('#lgo'); if (b) b.disabled = false; }
+  };
+}
+$('#logout').onclick = () => { if (confirm('¿Cerrar sesión?')) signOut(auth); };
+
+// ---------- navegación ----------
+function startApp() {
+  $('#hdr').hidden = false; $('#nav').hidden = false;
+  $('#bizName').textContent = settings.businessName;
+  $('#whoami').textContent = `${me.name} · ${isAdmin() ? 'Administrador' : 'Cobrador'}`;
+  const tabs = [['inicio', '🏠', 'Inicio'], ['cobros', '💵', 'Cobros'], ['clientes', '👥', 'Clientes'], ['cuadre', '🧾', 'Cuadre']];
+  if (isAdmin()) tabs.push(['equipo', '⚙️', 'Equipo']);
+  $('#nav').innerHTML = tabs.map(([k, i, t]) => `<button data-tab="${k}"><b>${i}</b>${t}</button>`).join('');
+  $('#nav').querySelectorAll('button').forEach(b => b.onclick = () => go(b.dataset.tab));
+  go(tab);
+}
+function go(t) {
+  tab = t;
+  $('#nav').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  view.innerHTML = '<div class="empty">Cargando…</div>';
+  ({ inicio: viewInicio, cobros: viewCobros, clientes: viewClientes, cuadre: viewCuadre, equipo: viewEquipo })[t]()
+    .catch(e => view.innerHTML = `<div class="card">Error: ${esc(errMsg(e))}</div>`);
+  window.scrollTo(0, 0);
+}
+const refresh = () => go(tab);
+
+// ---------- INICIO ----------
+async function viewInicio() {
+  const today = todayStr();
+  const monthStart = today.slice(0, 8) + '01';
+  const loans = rows(await getDocs(qLoansActive()));
+  const paysToday = rows(await getDocs(qPaysByDate(today))).filter(p => !p.anulado);
+  let paysMonth = [];
+  if (isAdmin()) paysMonth = rows(await getDocs(qPaysFrom(monthStart))).filter(p => !p.anulado);
+
+  let capital = 0, intPend = 0, late = 0;
+  loans.forEach(L => { const s = loanStatus(L, today); capital += s.capital; intPend += s.interestDue; if (s.late) late++; });
+  const sum = (a, k) => r2(a.reduce((t, p) => t + (p[k] || 0), 0));
+
+  view.innerHTML = `
+    <h2>Hoy, ${fdate(today)}</h2>
+    <div class="grid">
+      <div class="stat"><span>Cobrado hoy</span><b>${money(sum(paysToday, 'amount'))}</b></div>
+      <div class="stat"><span>Pagos hoy</span><b>${paysToday.length}</b></div>
+      <div class="stat"><span>Interés cobrado hoy</span><b>${money(sum(paysToday, 'toInterest'))}</b></div>
+      <div class="stat"><span>Capital cobrado hoy</span><b>${money(sum(paysToday, 'toCapital'))}</b></div>
+    </div>
+    <h3>Cartera</h3>
+    <div class="grid">
+      <div class="stat"><span>Capital en la calle</span><b>${money(capital)}</b></div>
+      <div class="stat"><span>Interés pendiente</span><b>${money(intPend)}</b></div>
+      <div class="stat"><span>Préstamos activos</span><b>${loans.length}</b></div>
+      <div class="stat tap" id="goLate"><span>Atrasados (+7 días)</span><b style="color:${late ? 'var(--red)' : 'inherit'}">${late}</b></div>
+    </div>
+    ${isAdmin() ? `<h3>Este mes</h3>
+    <div class="grid">
+      <div class="stat"><span>Ganancia (interés)</span><b style="color:var(--green)">${money(sum(paysMonth, 'toInterest'))}</b></div>
+      <div class="stat"><span>Capital recuperado</span><b>${money(sum(paysMonth, 'toCapital'))}</b></div>
+    </div>` : ''}
+    <div class="btns" style="margin-top:16px">
+      <button class="btn" id="qCobrar">💵 Cobrar</button>
+      ${isAdmin() ? '<button class="btn sec" id="qNuevo">➕ Nuevo préstamo</button>' : ''}
+    </div>`;
+  $('#goLate').onclick = () => go('cobros');
+  $('#qCobrar').onclick = () => go('cobros');
+  if ($('#qNuevo')) $('#qNuevo').onclick = () => pickClientForLoan();
+}
+
+// ---------- COBROS ----------
+async function viewCobros() {
+  const today = todayStr();
+  const loans = rows(await getDocs(qLoansActive())).map(L => ({ ...L, st: loanStatus(L, today) }));
+  loans.sort((a, b) => (b.st.late - a.st.late) || (b.st.daysSincePay - a.st.daysSincePay));
+  view.innerHTML = `<h2>Cobros</h2>
+    <input id="q" placeholder="Buscar cliente…">
+    <div id="list"></div>`;
+  const draw = () => {
+    const q = $('#q').value.toLowerCase();
+    const list = loans.filter(L => (L.clientName || '').toLowerCase().includes(q));
+    $('#list').innerHTML = list.length ? list.map(L => `
+      <div class="card tap" data-id="${L.id}">
+        <div class="row"><b>${esc(L.clientName)}</b>
+          ${L.st.late ? `<span class="badge late">Atrasado ${L.st.daysSincePay} días</span>` : `<span class="badge">${L.st.daysSincePay} días</span>`}</div>
+        <div class="row" style="margin-top:6px">
+          <div><span class="mute">Interés debe</span><div class="big">${money(L.st.interestDue)}</div></div>
+          <div style="text-align:right"><span class="mute">Capital · ${pct(L.rateWeekly)}/sem</span><div><b>${money(L.st.capital)}</b></div></div>
+        </div>
+        ${isAdmin() ? `<div class="mute">Cobrador: ${esc(collectorName(L.collectorId))}</div>` : ''}
+      </div>`).join('') : '<div class="empty">No hay préstamos activos.</div>';
+    $('#list').querySelectorAll('[data-id]').forEach(c => c.onclick = () => openLoan(c.dataset.id));
+  };
+  $('#q').oninput = draw; draw();
+}
+
+// ---------- PRÉSTAMO ----------
+async function openLoan(id) {
+  const snap = await getDoc(doc(db, 'loans', id));
+  if (!snap.exists()) return toast('Préstamo no encontrado');
+  const L = { id, ...snap.data() };
+  const st = loanStatus(L);
+  const pays = rows(await getDocs(qPaysByLoan(id))).sort((a, b) => (b.date + (b.createdAt?.seconds || 0)).localeCompare(a.date + (a.createdAt?.seconds || 0)));
+  const active = L.status === 'activo';
+  const badge = { activo: st.late ? '<span class="badge late">Atrasado</span>' : '<span class="badge">Activo</span>', saldado: '<span class="badge done">Saldado</span>', castigado: '<span class="badge bad">Incobrable</span>' }[L.status] || '';
+  const sh = openModal(`
+    <h2>${esc(L.clientName)} ${badge}</h2>
+    <div class="card">
+      <div class="row"><span class="mute">Prestado</span><b>${money(L.principal)} · ${fdate(L.startDate)}</b></div>
+      <div class="row"><span class="mute">Tasa</span><b>${pct(L.rateWeekly)} semanal</b></div>
+      <div class="row"><span class="mute">Capital pendiente</span><b>${money(st.capital)}</b></div>
+      <div class="row"><span class="mute">Interés pendiente hoy</span><b style="color:var(--red)">${money(st.interestDue)}</b></div>
+      <div class="row"><span class="mute">Total para saldar hoy</span><b>${money(st.total)}</b></div>
+      <div class="row"><span class="mute">Interés por día / semana</span><b>${money(st.daily)} / ${money(st.weekly)}</b></div>
+      <div class="row"><span class="mute">Interés cobrado total</span><b style="color:var(--green)">${money(L.totalInterestPaid)}</b></div>
+    </div>
+    ${active ? `
+    <h3>Registrar pago</h3>
+    <div class="card">
+      <div class="chips">
+        <button class="chip" data-amt="${st.interestDue}">Solo interés<br><small>${money(st.interestDue)}</small></button>
+        <button class="chip" data-amt="${st.total}">Saldar todo<br><small>${money(st.total)}</small></button>
+      </div>
+      <label>Monto recibido (RD$)</label>
+      <input id="pamt" type="number" inputmode="decimal" step="0.01" min="0">
+      <div class="split" id="psplit">Escribe el monto para ver cómo se aplica.</div>
+      <label>Nota (opcional)</label><input id="pnote">
+      <button class="btn" id="pgo">Registrar pago</button>
+    </div>` : ''}
+    <h3>Historial de pagos</h3>
+    <div class="card">${pays.length ? `<table><tr><th>Fecha</th><th class="n">Pagó</th><th class="n">Interés</th><th class="n">Capital</th></tr>
+      ${pays.map(p => `<tr style="${p.anulado ? 'text-decoration:line-through;opacity:.5' : ''}" class="tap" data-pay="${p.id}"><td>${fdate(p.date)}</td><td class="n">${money(p.amount)}</td><td class="n">${money(p.toInterest)}</td><td class="n">${money(p.toCapital)}</td></tr>`).join('')}</table>
+      <p class="mute">Toca un pago para ver el recibo.</p>` : '<div class="mute">Sin pagos todavía.</div>'}</div>
+    ${isAdmin() && active ? `<div class="btns"><button class="btn warn sm" id="lbad">Marcar incobrable</button></div>` : ''}
+  `);
+  if (active) {
+    const amt = sh.querySelector('#pamt'), split = sh.querySelector('#psplit');
+    const preview = () => {
+      const v = parseFloat(amt.value);
+      if (!(v > 0)) { split.textContent = 'Escribe el monto para ver cómo se aplica.'; return; }
+      try {
+        const r = applyPayment(L, v);
+        split.innerHTML = `A interés: <b>${money(r.toInterest)}</b> · A capital: <b>${money(r.toCapital)}</b><br>Queda capital: <b>${money(r.capitalBalance)}</b>${r.accruedInterest > 0 ? ` · Interés atrasado: <b style="color:var(--red)">${money(r.accruedInterest)}</b>` : ''}`;
+      } catch (e) { split.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+    };
+    amt.oninput = preview;
+    sh.querySelectorAll('[data-amt]').forEach(c => c.onclick = () => { amt.value = c.dataset.amt; sh.querySelectorAll('.chip').forEach(x => x.classList.remove('on')); c.classList.add('on'); preview(); });
+    sh.querySelector('#pgo').onclick = async () => {
+      const v = parseFloat(amt.value);
+      if (!(v > 0)) return toast('Escribe un monto');
+      const btn = sh.querySelector('#pgo'); btn.disabled = true; btn.textContent = 'Guardando…';
+      try {
+        const pay = await registerPayment(id, v, sh.querySelector('#pnote').value.trim());
+        closeModal(); showReceipt(pay); if (tab !== 'clientes') refresh();
+      } catch (e) { toast(errMsg(e)); btn.disabled = false; btn.textContent = 'Registrar pago'; }
+    };
+  }
+  sh.querySelectorAll('[data-pay]').forEach(r => r.onclick = () => { const p = pays.find(x => x.id === r.dataset.pay); showReceipt(p, L); });
+  const bad = sh.querySelector('#lbad');
+  if (bad) bad.onclick = async () => {
+    if (!confirm('¿Marcar este préstamo como incobrable? Dejará de aparecer en cobros.')) return;
+    await updateDoc(doc(db, 'loans', id), { status: 'castigado', updatedAt: serverTimestamp() });
+    closeModal(); toast('Marcado como incobrable'); refresh();
+  };
+}
+
+async function registerPayment(loanId, amount, note) {
+  const date = todayStr();
+  const loanRef = doc(db, 'loans', loanId);
+  const payRef = doc(collection(db, 'payments'));
+  let pay;
+  await runTransaction(db, async tx => {
+    const s = await tx.get(loanRef);
+    const L = s.data();
+    if (L.status !== 'activo') throw new Error('Este préstamo no está activo.');
+    const r = applyPayment(L, amount, date);
+    pay = {
+      loanId, clientId: L.clientId, clientName: L.clientName, clientPhone: L.clientPhone || '',
+      collectorId: L.collectorId || me.uid, byUid: me.uid, byName: me.name,
+      amount: r2(amount), toInterest: r.toInterest, toCapital: r.toCapital,
+      capitalAfter: r.capitalBalance, interestAfter: r.accruedInterest,
+      date, note: note || '', anulado: false, createdAt: serverTimestamp(),
+      prev: {
+        capitalBalance: L.capitalBalance, accruedInterest: L.accruedInterest || 0, lastCalcDate: L.lastCalcDate,
+        lastPaymentDate: L.lastPaymentDate || null, lastPaymentId: L.lastPaymentId || null,
+        totalInterestPaid: L.totalInterestPaid || 0, totalCapitalPaid: L.totalCapitalPaid || 0, status: L.status
+      }
+    };
+    tx.set(payRef, pay);
+    tx.update(loanRef, {
+      capitalBalance: r.capitalBalance, accruedInterest: r.accruedInterest, lastCalcDate: date,
+      lastPaymentDate: date, lastPaymentId: payRef.id,
+      totalInterestPaid: r2((L.totalInterestPaid || 0) + r.toInterest),
+      totalCapitalPaid: r2((L.totalCapitalPaid || 0) + r.toCapital),
+      status: r.status, updatedAt: serverTimestamp()
+    });
+  });
+  return { id: payRef.id, ...pay };
+}
+
+async function voidPayment(p) {
+  const loanRef = doc(db, 'loans', p.loanId), payRef = doc(db, 'payments', p.id);
+  await runTransaction(db, async tx => {
+    const L = (await tx.get(loanRef)).data();
+    const P = (await tx.get(payRef)).data();
+    if (P.anulado) throw new Error('Este pago ya fue anulado.');
+    if (L.lastPaymentId !== p.id) throw new Error('Solo se puede anular el último pago del préstamo.');
+    tx.update(loanRef, { ...P.prev, updatedAt: serverTimestamp() });
+    tx.update(payRef, { anulado: true, anuladoPor: me.name, anuladoEn: serverTimestamp() });
+  });
+}
+
+// ---------- RECIBO ----------
+function receiptText(p) {
+  return [
+    `*${settings.businessName}*`,
+    `Recibo de pago #${p.id.slice(-6).toUpperCase()}`,
+    `Fecha: ${fdate(p.date)}`,
+    `Cliente: ${p.clientName}`,
+    ``,
+    `Pagó: ${money(p.amount)}`,
+    `  A interés: ${money(p.toInterest)}`,
+    `  A capital: ${money(p.toCapital)}`,
+    ``,
+    `Capital pendiente: ${money(p.capitalAfter)}`,
+    p.interestAfter > 0 ? `Interés atrasado: ${money(p.interestAfter)}` : null,
+    p.capitalAfter <= 0 && p.interestAfter <= 0 ? `✅ PRÉSTAMO SALDADO` : null,
+    `Cobrado por: ${p.byName}`,
+    p.anulado ? `*** PAGO ANULADO ***` : null,
+  ].filter(x => x !== null).join('\n');
+}
+function showReceipt(p, L) {
+  const txt = receiptText(p);
+  const phone = String(p.clientPhone || (L && L.clientPhone) || '').replace(/\D/g, '');
+  const wa = phone ? (phone.length === 10 ? '1' + phone : phone) : '';
+  const sh = openModal(`
+    <h2>Recibo</h2>
+    <pre class="receipt">${esc(txt)}</pre>
+    <div class="btns">
+      <a class="btn" style="text-align:center;text-decoration:none" target="_blank" href="https://wa.me/${wa}?text=${encodeURIComponent(txt)}">WhatsApp</a>
+      <button class="btn sec" id="rprint">Imprimir</button>
+    </div>
+    ${isAdmin() && !p.anulado ? `<div class="btns"><button class="btn warn sm" id="rvoid">Anular este pago</button></div>` : ''}`);
+  sh.querySelector('#rprint').onclick = () => {
+    const w = window.open('', '_blank');
+    w.document.write(`<pre style="font:14px monospace;white-space:pre-wrap">${esc(txt.replace(/\*/g, ''))}</pre><script>print()<\/script>`);
+    w.document.close();
+  };
+  const v = sh.querySelector('#rvoid');
+  if (v) v.onclick = async () => {
+    if (!confirm('¿Anular este pago? El préstamo vuelve a como estaba antes del pago.')) return;
+    try { await voidPayment(p); closeModal(); toast('Pago anulado'); refresh(); } catch (e) { toast(errMsg(e)); }
+  };
+}
+
+// ---------- CLIENTES ----------
+async function viewClientes() {
+  const clients = rows(await getDocs(qClients())).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  view.innerHTML = `<div class="row"><h2>Clientes (${clients.length})</h2>${isAdmin() ? '<button class="btn sm" id="cnew">➕ Nuevo</button>' : ''}</div>
+    <input id="q" placeholder="Buscar por nombre, cédula o teléfono…"><div id="list"></div>`;
+  const draw = () => {
+    const q = $('#q').value.toLowerCase();
+    const list = clients.filter(c => [c.name, c.cedula, c.phone].join(' ').toLowerCase().includes(q));
+    $('#list').innerHTML = list.length ? list.map(c => `<div class="card tap" data-id="${c.id}">
+      <b>${esc(c.name)}</b><div class="mute">${esc(c.phone || '')} ${c.cedula ? '· ' + esc(c.cedula) : ''}</div>
+      ${isAdmin() ? `<div class="mute">Cobrador: ${esc(collectorName(c.collectorId))}</div>` : ''}</div>`).join('')
+      : '<div class="empty">No hay clientes.</div>';
+    $('#list').querySelectorAll('[data-id]').forEach(el => el.onclick = () => openClient(el.dataset.id));
+  };
+  $('#q').oninput = draw; draw();
+  if ($('#cnew')) $('#cnew').onclick = () => clientForm();
+}
+
+function collectorOptions(sel) {
+  const list = usersCache.filter(u => u.active !== false);
+  return list.map(u => `<option value="${u.id}" ${u.id === sel ? 'selected' : ''}>${esc(u.name)} (${u.role === 'admin' ? 'admin' : 'cobrador'})</option>`).join('');
+}
+
+function clientForm(c = {}) {
+  const sh = openModal(`<h2>${c.id ? 'Editar cliente' : 'Nuevo cliente'}</h2>
+    <label>Nombre completo *</label><input id="cn" value="${esc(c.name)}">
+    <label>Cédula</label><input id="cc" value="${esc(c.cedula)}" placeholder="000-0000000-0" inputmode="numeric">
+    <label>Teléfono / WhatsApp</label><input id="cp" value="${esc(c.phone)}" placeholder="809-000-0000" inputmode="tel">
+    <label>Dirección</label><input id="ca" value="${esc(c.address)}">
+    <label>Trabajo / negocio</label><input id="cw" value="${esc(c.work)}">
+    <label>Garante (nombre y teléfono)</label><input id="cg" value="${esc(c.guarantor)}">
+    <label>Cobrador asignado</label><select id="ck">${collectorOptions(c.collectorId || me.uid)}</select>
+    <label>Notas</label><textarea id="cnotes" rows="2">${esc(c.notes)}</textarea>
+    <button class="btn" id="csave">Guardar</button>`);
+  sh.querySelector('#csave').onclick = async () => {
+    const data = {
+      name: sh.querySelector('#cn').value.trim(), cedula: sh.querySelector('#cc').value.trim(),
+      phone: sh.querySelector('#cp').value.trim(), address: sh.querySelector('#ca').value.trim(),
+      work: sh.querySelector('#cw').value.trim(), guarantor: sh.querySelector('#cg').value.trim(),
+      collectorId: sh.querySelector('#ck').value, notes: sh.querySelector('#cnotes').value.trim(), updatedAt: serverTimestamp()
+    };
+    if (!data.name) return toast('Escribe el nombre');
+    try {
+      if (c.id) {
+        await updateDoc(doc(db, 'clients', c.id), data);
+        // Mantener préstamos sincronizados (nombre, teléfono, cobrador)
+        const ls = await getDocs(query(collection(db, 'loans'), where('clientId', '==', c.id)));
+        if (!ls.empty) { const b = writeBatch(db); ls.forEach(d => b.update(d.ref, { clientName: data.name, clientPhone: data.phone, collectorId: data.collectorId })); await b.commit(); }
+        closeModal(); toast('Cliente actualizado'); openClient(c.id);
+      } else {
+        const ref = await addDoc(collection(db, 'clients'), { ...data, createdAt: serverTimestamp() });
+        closeModal(); toast('Cliente creado'); if (tab === 'clientes') refresh(); openClient(ref.id);
+      }
+    } catch (e) { toast(errMsg(e)); }
+  };
+}
+
+async function openClient(id) {
+  const snap = await getDoc(doc(db, 'clients', id));
+  if (!snap.exists()) return toast('Cliente no encontrado');
+  const c = { id, ...snap.data() };
+  const loans = rows(await getDocs(qLoansByClient(id))).sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
+  const sh = openModal(`<h2>${esc(c.name)}</h2>
+    <div class="card">
+      ${c.cedula ? `<div class="row"><span class="mute">Cédula</span><b>${esc(c.cedula)}</b></div>` : ''}
+      ${c.phone ? `<div class="row"><span class="mute">Teléfono</span><a href="tel:${esc(c.phone)}"><b>${esc(c.phone)}</b></a></div>` : ''}
+      ${c.address ? `<div class="row"><span class="mute">Dirección</span><b>${esc(c.address)}</b></div>` : ''}
+      ${c.work ? `<div class="row"><span class="mute">Trabajo</span><b>${esc(c.work)}</b></div>` : ''}
+      ${c.guarantor ? `<div class="row"><span class="mute">Garante</span><b>${esc(c.guarantor)}</b></div>` : ''}
+      <div class="row"><span class="mute">Cobrador</span><b>${esc(collectorName(c.collectorId))}</b></div>
+      ${c.notes ? `<div class="mute" style="margin-top:6px">${esc(c.notes)}</div>` : ''}
+    </div>
+    ${isAdmin() ? `<div class="btns"><button class="btn" id="nl">➕ Nuevo préstamo</button><button class="btn sec" id="ce">Editar</button></div>` : ''}
+    <h3>Préstamos</h3>
+    ${loans.length ? loans.map(L => { const s = loanStatus(L); return `<div class="card tap" data-loan="${L.id}">
+      <div class="row"><b>${money(L.principal)} · ${pct(L.rateWeekly)}/sem</b><span class="badge ${L.status === 'saldado' ? 'done' : L.status === 'castigado' ? 'bad' : s.late ? 'late' : ''}">${L.status}</span></div>
+      <div class="mute">Desde ${fdate(L.startDate)} · Capital ${money(s.capital)} · Interés ${money(L.status === 'activo' ? s.interestDue : 0)}</div></div>`; }).join('')
+      : '<div class="empty">Sin préstamos.</div>'}`);
+  sh.querySelectorAll('[data-loan]').forEach(el => el.onclick = () => openLoan(el.dataset.loan));
+  if (sh.querySelector('#nl')) sh.querySelector('#nl').onclick = () => loanForm(c);
+  if (sh.querySelector('#ce')) sh.querySelector('#ce').onclick = () => clientForm(c);
+}
+
+async function pickClientForLoan() {
+  const clients = rows(await getDocs(qClients())).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const sh = openModal(`<h2>Nuevo préstamo</h2><p class="mute">Elige el cliente o crea uno nuevo.</p>
+    <button class="btn sec" id="pcnew">➕ Cliente nuevo</button>
+    <input id="pq" placeholder="Buscar…" style="margin-top:10px"><div id="plist"></div>`);
+  const draw = () => {
+    const q = sh.querySelector('#pq').value.toLowerCase();
+    sh.querySelector('#plist').innerHTML = clients.filter(c => (c.name || '').toLowerCase().includes(q))
+      .map(c => `<div class="card tap" data-id="${c.id}"><b>${esc(c.name)}</b> <span class="mute">${esc(c.phone || '')}</span></div>`).join('');
+    sh.querySelectorAll('[data-id]').forEach(el => el.onclick = () => loanForm(clients.find(c => c.id === el.dataset.id)));
+  };
+  sh.querySelector('#pq').oninput = draw; draw();
+  sh.querySelector('#pcnew').onclick = () => clientForm();
+}
+
+function loanForm(c) {
+  let rate = 0.20;
+  const sh = openModal(`<h2>Préstamo para ${esc(c.name)}</h2>
+    <label>Monto prestado (RD$)</label><input id="la" type="number" inputmode="decimal" step="0.01" min="0">
+    <label>Interés semanal</label>
+    <div class="chips">
+      <button class="chip on" data-r="0.20">20%<br><small>RD$200 x mil</small></button>
+      <button class="chip" data-r="0.30">30%<br><small>RD$300 x mil</small></button>
+      <button class="chip" data-r="otro">Otro</button>
+    </div>
+    <div id="lother" hidden><label>Otro porcentaje semanal (%)</label><input id="lop" type="number" inputmode="decimal" step="0.1"></div>
+    <label>Fecha de entrega</label><input id="ld" type="date" value="${todayStr()}">
+    <div class="split" id="lprev">Escribe el monto.</div>
+    <button class="btn" id="lsave">Crear préstamo</button>`);
+  const amt = sh.querySelector('#la'), other = sh.querySelector('#lop');
+  const prev = () => {
+    const a = parseFloat(amt.value);
+    const r = rate === 'otro' ? (parseFloat(other.value) || 0) / 100 : rate;
+    sh.querySelector('#lprev').innerHTML = a > 0 && r > 0
+      ? `Interés: <b>${money(a * r)}</b> por semana · <b>${money(a * r / 7)}</b> por día<br>El interés corre cada día sobre el capital que quede.`
+      : 'Escribe el monto.';
+  };
+  sh.querySelectorAll('[data-r]').forEach(ch => ch.onclick = () => {
+    sh.querySelectorAll('[data-r]').forEach(x => x.classList.remove('on')); ch.classList.add('on');
+    rate = ch.dataset.r === 'otro' ? 'otro' : parseFloat(ch.dataset.r);
+    sh.querySelector('#lother').hidden = rate !== 'otro'; prev();
+  });
+  amt.oninput = prev; other.oninput = prev;
+  sh.querySelector('#lsave').onclick = async () => {
+    const a = r2(parseFloat(amt.value));
+    const r = rate === 'otro' ? (parseFloat(other.value) || 0) / 100 : rate;
+    const start = sh.querySelector('#ld').value || todayStr();
+    if (!(a > 0)) return toast('Escribe el monto');
+    if (!(r > 0)) return toast('Escribe el porcentaje');
+    if (daysBetween(start, todayStr()) < 0) return toast('La fecha no puede ser futura');
+    if (!confirm(`¿Crear préstamo de ${money(a)} a ${pct(r)} semanal para ${c.name}?`)) return;
+    try {
+      const ref = await addDoc(collection(db, 'loans'), {
+        clientId: c.id, clientName: c.name, clientPhone: c.phone || '', collectorId: c.collectorId || me.uid,
+        principal: a, rateWeekly: r, startDate: start, capitalBalance: a, accruedInterest: 0, lastCalcDate: start,
+        lastPaymentDate: null, lastPaymentId: null, totalInterestPaid: 0, totalCapitalPaid: 0,
+        status: 'activo', createdBy: me.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+      });
+      closeModal(); toast('Préstamo creado'); openLoan(ref.id);
+    } catch (e) { toast(errMsg(e)); }
+  };
+}
+
+// ---------- CUADRE ----------
+async function viewCuadre(date = todayStr()) {
+  const pays = rows(await getDocs(qPaysByDate(date))).sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
+  const ok = pays.filter(p => !p.anulado);
+  const by = {};
+  ok.forEach(p => { const k = p.byName || '—'; by[k] = by[k] || { n: 0, amount: 0, i: 0, c: 0 }; by[k].n++; by[k].amount += p.amount; by[k].i += p.toInterest; by[k].c += p.toCapital; });
+  const tot = ok.reduce((t, p) => ({ amount: t.amount + p.amount, i: t.i + p.toInterest, c: t.c + p.toCapital }), { amount: 0, i: 0, c: 0 });
+  view.innerHTML = `<h2>Cuadre de caja</h2>
+    <input id="cd" type="date" value="${date}">
+    <div class="card"><div class="row"><span>Total cobrado</span><span class="big">${money(tot.amount)}</span></div>
+      <div class="row mute"><span>Interés ${money(tot.i)}</span><span>Capital ${money(tot.c)}</span><span>${ok.length} pagos</span></div></div>
+    ${isAdmin() ? `<h3>Por cobrador</h3><div class="card"><table><tr><th>Cobrador</th><th class="n">Pagos</th><th class="n">Total</th></tr>
+      ${Object.entries(by).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${v.n}</td><td class="n"><b>${money(v.amount)}</b></td></tr>`).join('') || '<tr><td colspan="3" class="mute">Sin pagos</td></tr>'}</table></div>` : ''}
+    <h3>Pagos</h3>
+    ${pays.length ? pays.map(p => `<div class="card tap" data-id="${p.id}" style="${p.anulado ? 'opacity:.5' : ''}">
+      <div class="row"><b>${esc(p.clientName)}</b><b>${money(p.amount)}</b></div>
+      <div class="mute">Interés ${money(p.toInterest)} · Capital ${money(p.toCapital)} · ${esc(p.byName)}${p.anulado ? ' · ANULADO' : ''}</div></div>`).join('')
+      : '<div class="empty">No hay pagos en esta fecha.</div>'}`;
+  $('#cd').onchange = e => { view.innerHTML = '<div class="empty">Cargando…</div>'; viewCuadre(e.target.value).catch(err => toast(errMsg(err))); };
+  view.querySelectorAll('[data-id]').forEach(el => el.onclick = () => showReceipt(pays.find(p => p.id === el.dataset.id)));
+}
+
+// ---------- EQUIPO (admin) ----------
+async function viewEquipo() {
+  await loadUsers();
+  view.innerHTML = `<h2>Equipo</h2>
+    <div class="card">${usersCache.map(u => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <div><b>${esc(u.name)}</b><div class="mute">${esc(u.email)} · ${u.role === 'admin' ? 'Administrador' : 'Cobrador'}${u.active === false ? ' · <span style="color:var(--red)">desactivado</span>' : ''}</div></div>
+      ${u.id !== me.uid ? `<button class="btn sm sec" data-tog="${u.id}">${u.active === false ? 'Activar' : 'Desactivar'}</button>` : '<span class="mute">Tú</span>'}
+    </div>`).join('')}</div>
+    <h3>Agregar persona</h3>
+    <div class="card">
+      <label>Nombre</label><input id="un">
+      <label>Correo</label><input id="ue" type="email">
+      <label>Contraseña (mín. 6)</label><input id="up" type="text">
+      <label>Rol</label><select id="ur"><option value="cobrador">Cobrador (solo ve sus clientes)</option><option value="admin">Administrador (ve todo)</option></select>
+      <button class="btn" id="uadd">Crear cuenta</button>
+    </div>
+    <h3>Negocio</h3>
+    <div class="card"><label>Nombre del negocio (sale en los recibos)</label><input id="bn" value="${esc(settings.businessName)}">
+      <button class="btn sec" id="bsave">Guardar</button></div>`;
+  view.querySelectorAll('[data-tog]').forEach(b => b.onclick = async () => {
+    const u = usersCache.find(x => x.id === b.dataset.tog);
+    await updateDoc(doc(db, 'users', u.id), { active: u.active === false });
+    toast('Actualizado'); viewEquipo();
+  });
+  $('#uadd').onclick = async () => {
+    const name = $('#un').value.trim(), email = $('#ue').value.trim(), pass = $('#up').value, role = $('#ur').value;
+    if (!name || !email || pass.length < 6) return toast('Completa nombre, correo y contraseña (6+)');
+    $('#uadd').disabled = true;
+    try {
+      const cred = await createUserWithEmailAndPassword(auth2, email, pass);
+      await setDoc(doc(db, 'users', cred.user.uid), { name, email, role, active: true, createdAt: serverTimestamp() });
+      await signOut(auth2);
+      toast(`Cuenta creada. Entra con ${email}`); viewEquipo();
+    } catch (e) { toast(errMsg(e)); $('#uadd').disabled = false; }
+  };
+  $('#bsave').onclick = async () => {
+    settings.businessName = $('#bn').value.trim() || 'Préstamos 4Squina';
+    await setDoc(doc(db, 'meta', 'settings'), settings, { merge: true });
+    $('#bizName').textContent = settings.businessName; toast('Guardado');
+  };
+}
+</script>
+</body>
+</html>
