@@ -182,12 +182,21 @@ onAuthStateChanged(auth, async u => {
   try {
     window.__stage = 'leer la base de datos';
     const [ownSnap, userSnap] = await withTimeout(Promise.all([getDoc(doc(db, 'meta', 'owner')), getDoc(doc(db, 'users', u.uid))]));
-    const owner = ownSnap.exists() && ownSnap.data().uid === u.uid;
+    let owner = ownSnap.exists() && ownSnap.data().uid === u.uid;
     let ud = userSnap.exists() ? userSnap.data() : null;
-    if (owner && !ud) {
-      ud = { name: 'Dueño', email: u.email, role: 'admin', active: true, createdAt: serverTimestamp() };
-      await setDoc(doc(db, 'users', u.uid), ud);
+    let ownerName = 'Dueño';
+    if (!ownSnap.exists() && !ud) {
+      // Todavía no hay dueño: la primera cuenta que entra se convierte en dueño
+      ownerName = (prompt('Esta será la cuenta del dueño. ¿Cuál es tu nombre?') || '').trim() || 'Dueño';
+      window.__stage = 'crear la cuenta del dueño';
+      await withTimeout(setDoc(doc(db, 'meta', 'owner'), { uid: u.uid, createdAt: serverTimestamp() }));
+      owner = true;
     }
+    if (owner && !ud) {
+      ud = { name: ownerName, email: u.email, role: 'admin', active: true, createdAt: serverTimestamp() };
+      await withTimeout(setDoc(doc(db, 'users', u.uid), ud));
+    }
+    if (!ud && ownSnap.exists()) return showFatal('Ya hay otra cuenta registrada como dueño (probablemente de una prueba que falló). Para arreglarlo, abre <a href="https://console.firebase.google.com/project/squina-prestamos/firestore/databases/-default-/data/~2Fmeta~2Fowner" target="_blank">este enlace de Firebase</a>, borra el documento <b>owner</b> (los 3 puntos → Eliminar documento) y vuelve a entrar con tu código.');
     if (!ud || ud.active === false) return showFatal('Esta cuenta no tiene acceso. Pide al administrador que la active.');
     me = { uid: u.uid, email: u.email, name: ud.name, role: ud.role, owner };
     try { const s = await getDoc(doc(db, 'meta', 'settings')); if (s.exists()) settings = { ...settings, ...s.data() }; } catch (_) {}
