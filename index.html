@@ -94,7 +94,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 window.__stage = 'iniciar base de datos';
 let db;
-try { db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) }); }
+try { db = initializeFirestore(app, { experimentalForceLongPolling: true, localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) }); }
 catch (e) { db = getFirestore(app); }
 const withTimeout = (p, ms = 12000) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej({ code: 'timeout', message: 'No se pudo conectar con la base de datos de Firebase. Revisa que la base de datos Firestore esté creada.' }), ms))]);
 window.__stage = 'esperando la sesión';
