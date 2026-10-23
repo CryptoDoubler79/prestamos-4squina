@@ -8,6 +8,7 @@
 <style>
 :root{--bg:#f4f6f5;--card:#fff;--ink:#14201b;--mute:#66736d;--line:#dfe5e2;--pri:#0f3d2e;--pri2:#1c6b4f;--acc:#d9a521;--red:#c0392b;--green:#1e8a4c;--r:14px}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:76px}
 header{background:var(--pri);color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:5}
 header h1{font-size:17px;margin:0;letter-spacing:.3px}
@@ -103,6 +104,7 @@ function errMsg(e) {
   if (c.includes('permission-denied')) return 'Sin permiso para esta acción.';
   if (c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found') || c.includes('invalid-email')) return 'Código incorrecto.';
   if (c.includes('email-already-in-use')) return 'Ese código ya está en uso. Elige otro.';
+  if (c.includes('operation-not-allowed')) return 'El acceso no está activado en Firebase (Authentication → Email/Password).';
   if (c.includes('too-many-requests')) return 'Demasiados intentos. Espera unos minutos.';
   if (c.includes('unavailable')) return 'Sin conexión. Intenta de nuevo cuando tengas internet.';
   return e && e.message || 'Error';
