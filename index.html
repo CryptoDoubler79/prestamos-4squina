@@ -80,7 +80,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, cuotasForTerm, ratePerCuota, monthlyToPeriod } from "./loancalc.js?v=4";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, cuotasForTerm, ratePerCuota, monthlyToPeriod } from "./loancalc.js?v=5";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -542,7 +542,7 @@ async function openLoan(id) {
       <div class="chips" style="flex-wrap:wrap">
         <button class="chip on" data-mode="normal">Interés y<br>luego capital</button>
         <button class="chip" data-mode="adelanto">Solo a rédito<br><small>adelanta semanas</small></button>
-        ${isAdmin() ? '<button class="chip" data-mode="capital">Solo a capital<br><small>interés sigue</small></button>' : ''}
+        <button class="chip" data-mode="capital">Abono a capital<br><small>solo si está al día</small></button>
       </div>`}
       <div class="chips">${chips.map(([t, v]) => `<button class="chip" data-amt="${v}">${t}<br><small>${money(v)}</small></button>`).join('')}</div>
       <label>Monto recibido (RD$)</label>
@@ -585,7 +585,6 @@ async function openLoan(id) {
         const r = applyPayment(L, v, todayStr(), mode);
         split.innerHTML = `${r.toMora > 0 ? `A mora: <b>${money(r.toMora)}</b> · ` : ''}A interés: <b>${money(r.toInterest)}</b> · A capital: <b>${money(r.toCapital)}</b><br>
           ${r.after.credit > 0 ? `Réditos adelantados: <b style="color:var(--green)">${money(r.after.credit)}</b><br>` : ''}
-          ${mode === 'capital' && r.after.interest > 0 ? `El interés de ${money(r.after.interest)} sigue pendiente.<br>` : ''}
           Capital queda: <b>${money(r.after.capital)}</b> · Interés semanal nuevo: <b>${money(r.after.capital * L.rateWeekly || 0)}</b><br>Queda debiendo en total: <b>${money(r.after.total)}</b>`;
       } catch (e) { split.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
     };

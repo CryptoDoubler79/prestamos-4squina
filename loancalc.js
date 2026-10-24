@@ -150,7 +150,7 @@ function cuotasStatus(L, asOf) {
 // ---------- pagos ----------
 // Orden: mora → interés → capital (en cuotas: de la más vieja a la más nueva)
 // mode (solo réditos): 'normal' = mora → interés → capital
-//                      'capital' = todo al capital (el interés y la mora siguen pendientes)
+//                      'capital' = todo al capital, solo si no debe interés ni mora
 //                      'adelanto' = mora → interés; lo que sobra queda como réditos pagados por adelantado
 export const PAY_MODES = { normal: 'Interés y luego capital', capital: 'Abono a capital', adelanto: 'Adelanto de réditos' };
 export function applyPayment(L, amount, date = todayStr(), mode = 'normal') {
@@ -162,7 +162,10 @@ export function applyPayment(L, amount, date = todayStr(), mode = 'normal') {
 function payReditos(L, amount, date, mode = 'normal') {
   const st = reditosStatus(L, date);
   let toMora = 0, toInterest = 0, toCapital = 0;
+  // Regla: nada va al capital mientras deba interés o mora (sin excepciones)
   if (mode === 'capital') {
+    const owed = r2(st.interestDue + st.moraDue);
+    if (owed > 0) throw new Error('Debe ponerse al día primero: debe RD$' + owed.toFixed(2) + ' de interés/mora. Solo después se puede abonar al capital.');
     toCapital = r2(Math.min(amount, L.capitalBalance));
     if (r2(amount - toCapital) > 0) throw new Error('El abono excede el capital pendiente (RD$' + r2(L.capitalBalance).toFixed(2) + ')');
   } else if (mode === 'adelanto') {
