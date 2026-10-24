@@ -82,6 +82,7 @@ function cuotaLiveMora(L, c, asOf) {
 }
 // Réditos: si pasan 7 días + gracia sin pagar, corre mora por día sobre el capital
 function reditosLiveMora(L, asOf) {
+  if (reditosRaw(L, asOf) <= 0) return 0; // con réditos adelantados no corre mora
   const lastPay = L.lastPaymentDate || L.startDate;
   const from = maxDate(addDays(lastPay, 7 + grace(L)), L.lastCalcDate);
   const days = Math.max(0, daysBetween(from, asOf));
@@ -93,20 +94,26 @@ export function loanStatus(L, asOf = todayStr()) {
   return L.type === 'cuotas' ? cuotasStatus(L, asOf) : reditosStatus(L, asOf);
 }
 
-function reditosStatus(L, asOf) {
+// Interés acumulado (negativo = réditos pagados por adelantado)
+function reditosRaw(L, asOf) {
   const days = Math.max(0, daysBetween(L.lastCalcDate, asOf));
-  const interestDue = r2((L.accruedInterest || 0) + L.capitalBalance * L.rateWeekly / 7 * days);
+  return r2((L.accruedInterest || 0) + L.capitalBalance * L.rateWeekly / 7 * days);
+}
+function reditosStatus(L, asOf) {
+  const raw = reditosRaw(L, asOf);
+  const interestDue = Math.max(0, raw), credit = Math.max(0, r2(-raw));
   const moraDue = r2((L.accruedMora || 0) + reditosLiveMora(L, asOf));
   const lastPay = L.lastPaymentDate || L.startDate;
   const daysSincePay = Math.max(0, daysBetween(lastPay, asOf));
   return {
-    type: 'reditos', interestDue, moraDue, capital: r2(L.capitalBalance),
-    total: r2(interestDue + moraDue + L.capitalBalance),
+    type: 'reditos', interestDue, interestRaw: raw, credit, moraDue, capital: r2(L.capitalBalance),
+    total: Math.max(0, r2(interestDue + moraDue + L.capitalBalance - credit)),
+    creditDays: credit > 0 && L.capitalBalance > 0 ? Math.floor(credit / (L.capitalBalance * L.rateWeekly / 7)) : 0,
     dueNow: r2(interestDue + moraDue),
     daily: r2(L.capitalBalance * L.rateWeekly / 7), weekly: r2(L.capitalBalance * L.rateWeekly),
     daysSincePay,
     daysLate: Math.max(daysSincePay - 7, matured(L, asOf) ? daysBetween(L.maturityDate, asOf) : 0, 0),
-    late: (daysSincePay > 7 && interestDue > 0) || matured(L, asOf),
+    late: (daysSincePay > 7 && interestDue > 0 && raw > L.capitalBalance * L.rateWeekly) || matured(L, asOf),
     maturityDate: L.maturityDate || null,
     matured: matured(L, asOf),
     daysToMaturity: L.maturityDate ? daysBetween(asOf, L.maturityDate) : null,
@@ -142,32 +149,47 @@ function cuotasStatus(L, asOf) {
 
 // ---------- pagos ----------
 // Orden: mora → interés → capital (en cuotas: de la más vieja a la más nueva)
-export function applyPayment(L, amount, date = todayStr()) {
+// mode (solo réditos): 'normal' = mora → interés → capital
+//                      'capital' = todo al capital (el interés y la mora siguen pendientes)
+//                      'adelanto' = mora → interés; lo que sobra queda como réditos pagados por adelantado
+export const PAY_MODES = { normal: 'Interés y luego capital', capital: 'Abono a capital', adelanto: 'Adelanto de réditos' };
+export function applyPayment(L, amount, date = todayStr(), mode = 'normal') {
   amount = r2(amount);
   if (!(amount > 0)) throw new Error('Monto inválido');
-  return L.type === 'cuotas' ? payCuotas(L, amount, date) : payReditos(L, amount, date);
+  return L.type === 'cuotas' ? payCuotas(L, amount, date) : payReditos(L, amount, date, mode);
 }
 
-function payReditos(L, amount, date) {
+function payReditos(L, amount, date, mode = 'normal') {
   const st = reditosStatus(L, date);
-  const toMora = r2(Math.min(amount, st.moraDue));
-  let rest = r2(amount - toMora);
-  const toInterest = r2(Math.min(rest, st.interestDue));
-  rest = r2(rest - toInterest);
-  const toCapital = r2(Math.min(rest, L.capitalBalance));
-  if (r2(rest - toCapital) > 0) throw new Error('El pago excede la deuda total (RD$' + st.total.toFixed(2) + ')');
+  let toMora = 0, toInterest = 0, toCapital = 0;
+  if (mode === 'capital') {
+    toCapital = r2(Math.min(amount, L.capitalBalance));
+    if (r2(amount - toCapital) > 0) throw new Error('El abono excede el capital pendiente (RD$' + r2(L.capitalBalance).toFixed(2) + ')');
+  } else if (mode === 'adelanto') {
+    toMora = r2(Math.min(amount, st.moraDue));
+    toInterest = r2(amount - toMora);
+  } else {
+    toMora = r2(Math.min(amount, st.moraDue));
+    let rest = r2(amount - toMora);
+    toInterest = r2(Math.min(rest, st.interestDue));
+    rest = r2(rest - toInterest);
+    toCapital = r2(Math.min(rest, L.capitalBalance));
+    if (r2(rest - toCapital) > 0) throw new Error('El pago excede la deuda total (RD$' + st.total.toFixed(2) + ')');
+  }
   const capitalBalance = r2(L.capitalBalance - toCapital);
-  const accruedInterest = r2(st.interestDue - toInterest);
+  const accruedInterest = r2(st.interestRaw - toInterest);
   const accruedMora = r2(st.moraDue - toMora);
+  const owedInt = Math.max(0, accruedInterest), credit = Math.max(0, r2(-accruedInterest));
   return {
-    toMora, toInterest, toCapital,
-    after: { capital: capitalBalance, interest: accruedInterest, mora: accruedMora, total: r2(capitalBalance + accruedInterest + accruedMora) },
+    toMora, toInterest, toCapital, mode, credit,
+    after: { capital: capitalBalance, interest: owedInt, mora: accruedMora, credit, total: Math.max(0, r2(capitalBalance + owedInt + accruedMora - credit)) },
     updates: {
       capitalBalance, accruedInterest, accruedMora, lastCalcDate: date, lastPaymentDate: date,
       totalInterestPaid: r2((L.totalInterestPaid || 0) + toInterest),
       totalCapitalPaid: r2((L.totalCapitalPaid || 0) + toCapital),
       totalMoraPaid: r2((L.totalMoraPaid || 0) + toMora),
       status: capitalBalance <= 0 && accruedInterest <= 0 && accruedMora <= 0 ? 'saldado' : 'activo',
+      // si queda saldado con crédito a favor, ese crédito se devuelve al cliente
     },
   };
 }
@@ -214,7 +236,7 @@ export function waiveMora(L, date = todayStr()) {
   const st = loanStatus(L, date);
   if (L.type === 'cuotas') return { amount: st.moraDue, updates: { moraWaived: r2((L.moraWaived || 0) + st.moraDue) } };
   // réditos: congelar interés a hoy y poner la mora en cero
-  return { amount: st.moraDue, updates: { accruedInterest: st.interestDue, accruedMora: 0, lastCalcDate: date } };
+  return { amount: st.moraDue, updates: { accruedInterest: st.interestRaw, accruedMora: 0, lastCalcDate: date } };
 }
 
 // Ampliar un préstamo de réditos (prestar más sobre el mismo préstamo)
@@ -224,7 +246,7 @@ export function extendReditos(L, extra, date = todayStr()) {
   const st = reditosStatus(L, date);
   return {
     capitalBalance: r2(L.capitalBalance + extra), principal: r2((L.principal || 0) + extra),
-    accruedInterest: st.interestDue, accruedMora: st.moraDue, lastCalcDate: date,
+    accruedInterest: st.interestRaw, accruedMora: st.moraDue, lastCalcDate: date,
   };
 }
 

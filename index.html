@@ -80,7 +80,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, cuotasForTerm, ratePerCuota, monthlyToPeriod } from "./loancalc.js?v=3";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, cuotasForTerm, ratePerCuota, monthlyToPeriod } from "./loancalc.js?v=4";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -354,7 +354,7 @@ async function viewInicio() {
   const paidIds = new Set(paysToday.map(p => p.loanId)), dueIds = new Set(paidIds);
   loans.forEach(L => {
     const s = loanStatus(L, today); capital += s.capital; pend += s.dueNow; if (s.late) late++;
-    if (L.type === 'cuotas' ? s.overdueCount > 0 : s.daysSincePay >= 7) { dueToday++; dueIds.add(L.id); }
+    if (L.type === 'cuotas' ? s.overdueCount > 0 : (s.daysSincePay >= 7 && s.interestDue > 0) || s.matured) { dueToday++; dueIds.add(L.id); }
   });
   const cobrados = paidIds.size, metaHoy = dueIds.size, pctHoy = metaHoy ? Math.round(cobrados / metaHoy * 100) : 0;
   // Interés + mora por mes (últimos 6 meses)
@@ -469,7 +469,7 @@ async function viewCobros() {
   const draw = () => {
     const q = $('#q').value.toLowerCase();
     const list = loans.filter(L => (L.clientName || '').toLowerCase().includes(q))
-      .filter(L => filter === 'all' || (filter === 'late' ? L.st.late : L.st.dueNow > 0 && (L.type === 'cuotas' ? L.st.overdueCount > 0 : L.st.daysSincePay >= 7)));
+      .filter(L => filter === 'all' || (filter === 'late' ? L.st.late : L.st.dueNow > 0 && (L.type === 'cuotas' ? L.st.overdueCount > 0 : (L.st.daysSincePay >= 7 && L.st.interestDue > 0) || L.st.matured)));
     $('#list').innerHTML = list.length ? list.map(L => `
       <div class="card tap" data-id="${L.id}">
         <div class="row"><b>${esc(L.clientName)}</b>
@@ -510,7 +510,7 @@ async function openLoan(id) {
   const nextC = isC ? L.schedule.find(c => r2(c.amount - c.paid) > 0.004) : null;
   const chips = isC
     ? [['Lo vencido', st.dueNow], ['Una cuota', nextC ? r2(nextC.amount - nextC.paid + st.moraDue) : 0], ['Saldar todo', st.total]]
-    : [['Solo interés', st.dueNow], ['Saldar todo', st.total]];
+    : [['Rédito de hoy', st.dueNow], ['Una semana', r2(st.moraDue + Math.max(0, st.interestRaw) + (st.interestRaw < st.weekly ? st.weekly - Math.max(0, st.interestRaw) : 0))], ['Saldar todo', st.total]];
   const mora = L.mora && L.mora.type && L.mora.type !== 'none'
     ? `${L.mora.type === 'pct' ? L.mora.value + '% de la cuota' : money(L.mora.value)} por día${L.mora.grace ? `, ${L.mora.grace} días de gracia` : ''}` : 'Sin mora';
   const sh = openModal(`
@@ -524,6 +524,7 @@ async function openLoan(id) {
         <div class="row"><span class="mute">Saldo pendiente</span><b>${money(st.balance)}</b></div>`
       : `<div class="row"><span class="mute">Capital pendiente</span><b>${money(st.capital)}</b></div>
         <div class="row"><span class="mute">Interés pendiente hoy</span><b style="color:var(--red)">${money(st.interestDue)}</b></div>
+        ${st.credit > 0 ? `<div class="row"><span class="mute">Réditos adelantados</span><b style="color:var(--green)">${money(st.credit)} (cubre ${st.creditDays} días)</b></div>` : ''}
         <div class="row"><span class="mute">Interés por día / semana</span><b>${money(st.daily)} / ${money(st.weekly)}</b></div>
         ${L.maturityDate ? `<div class="row"><span class="mute">Capital vence</span><b style="color:${st.matured ? 'var(--red)' : 'inherit'}">${fdate(L.maturityDate)}${st.matured ? ' (VENCIDO)' : st.daysToMaturity !== null && st.daysToMaturity <= 7 ? ` (en ${st.daysToMaturity} días)` : ''}</b></div>` : ''}`}
       <div class="row"><span class="mute">Mora pendiente</span><b style="color:${st.moraDue > 0 ? 'var(--red)' : 'inherit'}">${money(st.moraDue)}</b></div>
@@ -537,6 +538,12 @@ async function openLoan(id) {
     ${active ? `
     <h3>Registrar pago</h3>
     <div class="card">
+      ${isC ? '' : `<label>¿Cómo aplicar el pago?</label>
+      <div class="chips" style="flex-wrap:wrap">
+        <button class="chip on" data-mode="normal">Interés y<br>luego capital</button>
+        <button class="chip" data-mode="adelanto">Solo a rédito<br><small>adelanta semanas</small></button>
+        ${isAdmin() ? '<button class="chip" data-mode="capital">Solo a capital<br><small>interés sigue</small></button>' : ''}
+      </div>`}
       <div class="chips">${chips.map(([t, v]) => `<button class="chip" data-amt="${v}">${t}<br><small>${money(v)}</small></button>`).join('')}</div>
       <label>Monto recibido (RD$)</label>
       <input id="pamt" type="number" inputmode="decimal" step="0.01" min="0">
@@ -570,22 +577,27 @@ async function openLoan(id) {
   sh.querySelector('#lcontract').onclick = () => printContract(L);
   if (active) {
     const amt = sh.querySelector('#pamt'), split = sh.querySelector('#psplit');
+    let mode = 'normal';
     const preview = () => {
       const v = parseFloat(amt.value);
       if (!(v > 0)) { split.textContent = 'Escribe el monto para ver cómo se aplica.'; return; }
       try {
-        const r = applyPayment(L, v);
-        split.innerHTML = `${r.toMora > 0 ? `A mora: <b>${money(r.toMora)}</b> · ` : ''}A interés: <b>${money(r.toInterest)}</b> · A capital: <b>${money(r.toCapital)}</b><br>Queda debiendo: <b>${money(r.after.total)}</b>`;
+        const r = applyPayment(L, v, todayStr(), mode);
+        split.innerHTML = `${r.toMora > 0 ? `A mora: <b>${money(r.toMora)}</b> · ` : ''}A interés: <b>${money(r.toInterest)}</b> · A capital: <b>${money(r.toCapital)}</b><br>
+          ${r.after.credit > 0 ? `Réditos adelantados: <b style="color:var(--green)">${money(r.after.credit)}</b><br>` : ''}
+          ${mode === 'capital' && r.after.interest > 0 ? `El interés de ${money(r.after.interest)} sigue pendiente.<br>` : ''}
+          Capital queda: <b>${money(r.after.capital)}</b> · Interés semanal nuevo: <b>${money(r.after.capital * L.rateWeekly || 0)}</b><br>Queda debiendo en total: <b>${money(r.after.total)}</b>`;
       } catch (e) { split.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
     };
     amt.oninput = preview;
-    sh.querySelectorAll('[data-amt]').forEach(c => c.onclick = () => { amt.value = c.dataset.amt; sh.querySelectorAll('.chip').forEach(x => x.classList.remove('on')); c.classList.add('on'); preview(); });
+    sh.querySelectorAll('[data-mode]').forEach(c => c.onclick = () => { mode = c.dataset.mode; sh.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === c)); preview(); });
+    sh.querySelectorAll('[data-amt]').forEach(c => c.onclick = () => { amt.value = c.dataset.amt; sh.querySelectorAll('[data-amt]').forEach(x => x.classList.remove('on')); c.classList.add('on'); preview(); });
     sh.querySelector('#pgo').onclick = async () => {
       const v = parseFloat(amt.value);
       if (!(v > 0)) return toast('Escribe un monto');
       const btn = sh.querySelector('#pgo'); btn.disabled = true; btn.textContent = 'Guardando…';
       try {
-        const pay = await registerPayment(id, v, sh.querySelector('#pnote').value.trim(), sh.querySelector('#pmet').value);
+        const pay = await registerPayment(id, v, sh.querySelector('#pnote').value.trim(), sh.querySelector('#pmet').value, mode);
         if (tab !== 'clientes') refresh(); showReceipt(pay, { fresh: true });
       } catch (e) { toast(errMsg(e)); btn.disabled = false; btn.textContent = 'Registrar pago'; }
     };
@@ -634,12 +646,12 @@ async function openLoan(id) {
   });
 }
 
-async function registerPayment(loanId, amount, note, method = 'efectivo') {
+async function registerPayment(loanId, amount, note, method = 'efectivo', mode = 'normal') {
   const date = todayStr();
   const loanRef = doc(db, 'loans', loanId);
   const payRef = doc(collection(db, 'payments'));
   const build = L => {
-    const r = applyPayment(L, amount, date);
+    const r = applyPayment(L, amount, date, L.type === 'cuotas' ? 'normal' : mode);
     const prev = {}; PAY_FIELDS.forEach(f => { prev[f] = L[f] === undefined ? null : L[f]; });
     let cuotaInfo = null, endDate = L.maturityDate || null;
     if (L.type === 'cuotas') {
@@ -658,6 +670,7 @@ async function registerPayment(loanId, amount, note, method = 'efectivo') {
       cuotaInfo, endDate,
       loanId, clientId: L.clientId, clientName: L.clientName, clientPhone: L.clientPhone || '',
       collectorId: L.collectorId || me.uid, byUid: me.uid, byName: me.name, loanType: L.type || 'reditos',
+      payMode: L.type === 'cuotas' ? 'normal' : mode, creditAfter: r.after.credit || 0,
       amount: r2(amount), toMora: r.toMora, toInterest: r.toInterest, toCapital: r.toCapital,
       capitalAfter: r.after.capital, interestAfter: r.after.interest, moraAfter: r.after.mora, totalAfter: r.after.total,
       method, date, time: new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' }), note: note || '', anulado: false, createdAt: serverTimestamp(), prev
@@ -714,6 +727,7 @@ function receiptLines(p, copy) {
     ['line'],
     ['kv-big', 'PAGO', money(p.amount)],
     ['kv', 'Forma', METHODS[p.method] || 'Efectivo'],
+    p.payMode && p.payMode !== 'normal' ? ['kv', 'Aplicado', PAY_MODES[p.payMode]] : null,
     p.toMora > 0 ? ['kv', ' A mora', money(p.toMora)] : null,
     ['kv', ' A interés', money(p.toInterest)],
     ['kv', ' A capital', money(p.toCapital)],
@@ -723,6 +737,7 @@ function receiptLines(p, copy) {
     ['kv', 'Capital pend.', money(p.capitalAfter)],
     p.totalAfter !== undefined ? ['kv', 'Saldo total', money(p.totalAfter)] : null,
     saldado ? ['center', '*** PRÉSTAMO SALDADO ***'] : null,
+    p.creditAfter > 0 ? ['kv', 'Adelantado', money(p.creditAfter)] : null,
     p.endDate ? ['kv', p.loanType === 'cuotas' ? 'Termina' : 'Capital vence', fdate(p.endDate)] : null,
     ['kv', 'Cobrado por', p.byName],
     p.anulado ? ['center', '*** PAGO ANULADO ***'] : null,
@@ -921,7 +936,7 @@ async function printContract(L) {
     ${moraTxt ? `<p><b>TERCERO:</b> ${moraTxt}</p>` : ''}
     ${L.collateral ? `<p><b>GARANTÍA:</b> Para seguridad del pago, EL DEUDOR ofrece en garantía: ${esc(L.collateral)}.</p>` : ''}
     ${c.guarantor ? `<p><b>FIADOR SOLIDARIO:</b> ${esc(c.guarantor)}, quien se obliga solidariamente con EL DEUDOR al pago de las sumas adeudadas.</p>` : ''}
-    <p><b>PAGOS:</b> Todo pago será respaldado por un recibo emitido por EL ACREEDOR o su cobrador autorizado. Los pagos se aplican primero a la mora, luego a los intereses y finalmente al capital.</p>
+    <p><b>PAGOS:</b> Todo pago será respaldado por un recibo emitido por EL ACREEDOR o su cobrador autorizado. Salvo que las partes acuerden otra cosa al momento del pago (abono a capital o pago adelantado de intereses), los pagos se aplican primero a la mora, luego a los intereses y finalmente al capital.</p>
     <p><b>INCUMPLIMIENTO:</b> La falta de pago de dos (2) o más cuotas o períodos consecutivos hará exigible la totalidad de la deuda.</p>
     <p>Hecho y firmado en dos (2) originales, uno para cada parte.</p>
     <div class="sig"><div>EL ACREEDOR</div><div>EL DEUDOR</div>${c.guarantor ? '<div>FIADOR</div>' : ''}</div>
