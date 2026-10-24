@@ -343,20 +343,37 @@ async function viewInicio() {
   const monthStart = today.slice(0, 8) + '01';
   const loans = rows(await getDocs(qLoansActive()));
   const paysToday = rows(await getDocs(qPaysByDate(today))).filter(p => !p.anulado);
-  let paysMonth = [], movesMonth = [];
+  let paysMonth = [], movesMonth = [], pays6 = [];
+  const m6 = addMonths(monthStart, -5);
   if (isAdmin()) {
-    paysMonth = rows(await getDocs(qPaysFrom(monthStart))).filter(p => !p.anulado);
+    pays6 = rows(await getDocs(qPaysFrom(m6))).filter(p => !p.anulado);
+    paysMonth = pays6.filter(p => p.date >= monthStart);
     movesMonth = rows(await getDocs(query(collection(db, 'cashmoves'), where('date', '>=', monthStart))));
   }
   let capital = 0, pend = 0, late = 0, dueToday = 0;
+  const paidIds = new Set(paysToday.map(p => p.loanId)), dueIds = new Set(paidIds);
   loans.forEach(L => {
     const s = loanStatus(L, today); capital += s.capital; pend += s.dueNow; if (s.late) late++;
-    if (L.type === 'cuotas' ? s.overdueCount > 0 : s.daysSincePay >= 7) dueToday++;
+    if (L.type === 'cuotas' ? s.overdueCount > 0 : s.daysSincePay >= 7) { dueToday++; dueIds.add(L.id); }
   });
+  const cobrados = paidIds.size, metaHoy = dueIds.size, pctHoy = metaHoy ? Math.round(cobrados / metaHoy * 100) : 0;
+  // Interés + mora por mes (últimos 6 meses)
+  const months = []; for (let i = 0; i < 6; i++) months.push(addMonths(m6, i).slice(0, 7));
+  const MES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const perMonth = months.map(m => r2(pays6.filter(p => p.date.startsWith(m)).reduce((t, p) => t + (p.toInterest || 0) + (p.toMora || 0), 0)));
+  const maxM = Math.max(1, ...perMonth);
+  let needBackup = false;
+  if (isAdmin()) { let last = settings.lastBackup || ''; try { last = [last, localStorage.getItem('lastBackup') || ''].sort().pop(); } catch (_) {} needBackup = last < today; }
   const sum = (a, k) => r2(a.reduce((t, p) => t + (p[k] || 0), 0));
   const gastosMes = r2(movesMonth.filter(m => m.type === 'gasto').reduce((t, m) => t + m.amount, 0));
   view.innerHTML = `
     <h2>Hoy, ${fdate(today)}</h2>
+    ${needBackup ? `<div class="card" style="border-color:var(--acc)"><div class="row"><div><b>💾 Copia de seguridad de hoy</b><div class="mute">Guarda todos tus datos en el teléfono (1 toque).</div></div><button class="btn sm" id="bkNow">Guardar</button></div></div>` : ''}
+    <div class="card">
+      <div class="row"><b>Cobrados hoy</b><b>${cobrados} de ${metaHoy}</b></div>
+      <div style="background:#e6efe9;border-radius:8px;height:12px;margin-top:8px;overflow:hidden"><div style="height:100%;width:${pctHoy}%;background:${pctHoy >= 100 ? 'var(--green)' : 'var(--pri2)'}"></div></div>
+      <div class="mute" style="margin-top:4px">${metaHoy - cobrados > 0 ? `Faltan ${metaHoy - cobrados} por cobrar` : metaHoy ? '¡Todo cobrado hoy!' : 'Nadie tiene pago pendiente hoy'}</div>
+    </div>
     <div class="grid">
       <div class="stat"><span>Cobrado hoy</span><b>${money(sum(paysToday, 'amount'))}</b></div>
       <div class="stat"><span>Pagos hoy</span><b>${paysToday.length}</b></div>
@@ -376,13 +393,68 @@ async function viewInicio() {
       <div class="stat"><span>Capital recuperado</span><b>${money(sum(paysMonth, 'toCapital'))}</b></div>
       <div class="stat"><span>Gastos</span><b>${money(gastosMes)}</b></div>
       <div class="stat"><span>Ganancia neta</span><b style="color:var(--green)">${money(sum(paysMonth, 'toInterest') + sum(paysMonth, 'toMora') - gastosMes)}</b></div>
-    </div>` : ''}
+    </div>
+    <h3>Intereses por mes</h3>
+    <div class="card"><div style="display:flex;align-items:flex-end;gap:8px;height:150px">
+      ${perMonth.map((v, i) => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
+        <div style="font-size:10px;color:var(--mute);margin-bottom:2px">${v >= 1000 ? Math.round(v / 1000) + 'k' : Math.round(v)}</div>
+        <div style="width:100%;height:${Math.max(2, v / maxM * 110)}px;background:${i === 5 ? 'var(--green)' : 'var(--pri2)'};border-radius:5px 5px 0 0"></div>
+        <div style="font-size:11px;color:var(--mute);margin-top:3px">${MES[Number(months[i].slice(5)) - 1]}</div></div>`).join('')}
+    </div><div class="mute" style="margin-top:6px">Interés + mora cobrados, últimos 6 meses (RD$)</div></div>` : ''}
     <div class="btns" style="margin-top:16px">
       <button class="btn" id="qCobrar">💵 Cobrar</button>
       ${isAdmin() ? '<button class="btn sec" id="qNuevo">➕ Nuevo préstamo</button>' : ''}
     </div>`;
   $('#goLate').onclick = $('#goCob').onclick = $('#qCobrar').onclick = () => go('cobros');
   if ($('#qNuevo')) $('#qNuevo').onclick = () => pickClientForLoan();
+  if ($('#bkNow')) $('#bkNow').onclick = async () => { if (await backupNow()) viewInicio().catch(() => {}); };
+}
+
+// ---------- COPIA DE SEGURIDAD ----------
+const BACKUP_COLS = ['clients', 'loans', 'payments', 'cashmoves', 'photos', 'users'];
+async function backupNow() {
+  toast('Preparando copia…');
+  try {
+    const data = { app: 'prestamos-4squina', version: 1, createdAt: new Date().toISOString(), settings, collections: {} };
+    for (const c of BACKUP_COLS) data.collections[c] = rows(await getDocs(collection(db, c)));
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const name = `respaldo_prestamos_${todayStr()}.json`;
+    const file = new File([blob], name, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] }) && /iPhone|iPad|Android/i.test(navigator.userAgent)) {
+      await navigator.share({ files: [file], title: 'Copia de seguridad' });
+    } else {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    }
+    const today = todayStr();
+    try { localStorage.setItem('lastBackup', today); } catch (_) {}
+    settings.lastBackup = today;
+    await setDoc(doc(db, 'meta', 'settings'), { lastBackup: today }, { merge: true }).catch(() => {});
+    toast('Copia guardada');
+    return true;
+  } catch (e) { if (!e || e.name !== 'AbortError') toast('No se pudo guardar la copia: ' + errMsg(e)); return false; }
+}
+async function restoreBackup() {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json,.json';
+  inp.onchange = async () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    let data;
+    try { data = JSON.parse(await f.text()); } catch (_) { return toast('Ese archivo no es una copia válida'); }
+    if (!data || data.app !== 'prestamos-4squina' || !data.collections) return toast('Ese archivo no es una copia de esta app');
+    const counts = BACKUP_COLS.map(c => `${(data.collections[c] || []).length} ${c}`).join(', ');
+    if (!confirm(`Copia del ${String(data.createdAt).slice(0, 10)}: ${counts}.\n\n¿Restaurar? Los registros de la copia reemplazan a los actuales con el mismo código. Lo creado después de la copia se mantiene.`)) return;
+    toast('Restaurando…');
+    try {
+      const ops = [];
+      for (const c of BACKUP_COLS) for (const r of (data.collections[c] || [])) { const { id, ...rest } = r; ops.push([c, id, rest]); }
+      for (let i = 0; i < ops.length; i += 400) {
+        const b = writeBatch(db);
+        ops.slice(i, i + 400).forEach(([c, id, rest]) => b.set(doc(db, c, id), rest));
+        await b.commit();
+      }
+      toast(`Restaurado: ${ops.length} registros`); go('inicio');
+    } catch (e) { toast('Error al restaurar: ' + errMsg(e)); }
+  };
+  inp.click();
 }
 
 // ---------- COBROS ----------
@@ -569,7 +641,21 @@ async function registerPayment(loanId, amount, note, method = 'efectivo') {
   const build = L => {
     const r = applyPayment(L, amount, date);
     const prev = {}; PAY_FIELDS.forEach(f => { prev[f] = L[f] === undefined ? null : L[f]; });
+    let cuotaInfo = null, endDate = L.maturityDate || null;
+    if (L.type === 'cuotas') {
+      const before = L.schedule, after = r.updates.schedule, total = after.length;
+      const touched = after.filter((c, i) => r2(c.paid - before[i].paid) > 0);
+      const full = touched.filter(c => r2(c.amount - c.paid) <= 0.004).map(c => c.n);
+      const part = touched.filter(c => r2(c.amount - c.paid) > 0.004).map(c => c.n);
+      const rng = a => a.length > 1 ? `${a[0]}-${a[a.length - 1]}` : String(a[0]);
+      cuotaInfo = {
+        label: [full.length ? `${rng(full)}/${total}` : '', part.length ? `abono a ${part[0]}/${total}` : ''].filter(Boolean).join(' + ') || (r.toMora > 0 ? 'Solo mora' : ''),
+        paidCount: after.filter(c => r2(c.amount - c.paid) <= 0.004).length, total
+      };
+      endDate = after[total - 1].due;
+    }
     const pay = {
+      cuotaInfo, endDate,
       loanId, clientId: L.clientId, clientName: L.clientName, clientPhone: L.clientPhone || '',
       collectorId: L.collectorId || me.uid, byUid: me.uid, byName: me.name, loanType: L.type || 'reditos',
       amount: r2(amount), toMora: r.toMora, toInterest: r.toInterest, toCapital: r.toCapital,
@@ -632,9 +718,12 @@ function receiptLines(p, copy) {
     ['kv', ' A interés', money(p.toInterest)],
     ['kv', ' A capital', money(p.toCapital)],
     ['line'],
+    p.cuotaInfo && p.cuotaInfo.label ? ['kv', 'Cuota', p.cuotaInfo.label] : null,
+    p.cuotaInfo ? ['kv', 'Cuotas pagadas', `${p.cuotaInfo.paidCount} de ${p.cuotaInfo.total}`] : null,
     ['kv', 'Capital pend.', money(p.capitalAfter)],
     p.totalAfter !== undefined ? ['kv', 'Saldo total', money(p.totalAfter)] : null,
     saldado ? ['center', '*** PRÉSTAMO SALDADO ***'] : null,
+    p.endDate ? ['kv', p.loanType === 'cuotas' ? 'Termina' : 'Capital vence', fdate(p.endDate)] : null,
     ['kv', 'Cobrado por', p.byName],
     p.anulado ? ['center', '*** PAGO ANULADO ***'] : null,
     ['line'],
@@ -1233,13 +1322,17 @@ async function viewMas() {
     <div class="card tap" id="mQuo"><b>🧮 Cotizar préstamo</b><div class="mute">Calcula cuotas sin guardar nada</div></div>
     <div class="card tap" id="mEq"><b>👥 Equipo</b><div class="mute">Cobradores y administradores</div></div>
     <div class="card tap" id="mNeg"><b>🏢 Negocio y contrato</b><div class="mute">Nombre, datos del prestamista, mora por defecto</div></div>
-    <div class="card tap" id="mHist"><b>📁 Préstamos cerrados</b><div class="mute">Saldados, renovados e incobrables</div></div>`;
+    <div class="card tap" id="mHist"><b>📁 Préstamos cerrados</b><div class="mute">Saldados, renovados e incobrables</div></div>
+    <div class="card tap" id="mBk"><b>💾 Copia de seguridad</b><div class="mute">Guardar todo ahora${settings.lastBackup ? ' · última: ' + fdate(settings.lastBackup) : ''}</div></div>
+    <div class="card tap" id="mRs"><b>♻️ Restaurar copia</b><div class="mute">Recuperar datos desde un archivo de copia</div></div>`;
   $('#mRep').onclick = () => viewReportes().catch(e => toast(errMsg(e)));
   $('#mExp').onclick = exportAll;
   $('#mQuo').onclick = () => loanForm({ name: '' }, { quote: true });
   $('#mEq').onclick = () => viewEquipo().catch(e => toast(errMsg(e)));
   $('#mNeg').onclick = negocioForm;
   $('#mHist').onclick = () => viewClosed().catch(e => toast(errMsg(e)));
+  $('#mBk').onclick = () => backupNow().then(ok => ok && viewMas());
+  $('#mRs').onclick = restoreBackup;
 }
 
 async function viewClosed() {
