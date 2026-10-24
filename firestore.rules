@@ -36,7 +36,9 @@ service cloud.firestore {
     match /payments/{id} {
       allow read: if isAdmin() || mine('collectorId');
       allow create: if isAdmin() || (isCollector() && request.resource.data.collectorId == request.auth.uid && request.resource.data.byUid == request.auth.uid);
-      allow update, delete: if isAdmin();
+      allow update: if isAdmin() || (mine('collectorId')
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['receiptVia','receiptAt','receiptCount']));
+      allow delete: if isAdmin();
     }
     match /cashmoves/{id} {
       allow read: if isAdmin() || mine('uid');

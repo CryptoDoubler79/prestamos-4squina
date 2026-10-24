@@ -79,7 +79,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, cuotasForTerm, ratePerCuota, monthlyToPeriod } from "./loancalc.js?v=3";
 
 const firebaseConfig = {
@@ -480,8 +480,8 @@ async function openLoan(id) {
     ${isC ? `<h3>Calendario de cuotas</h3><div class="card">${scheduleTable(L)}</div>` : ''}
     <h3>Historial de pagos</h3>
     <div class="card">${pays.length ? `<table><tr><th>Fecha</th><th class="n">Pagó</th><th class="n">Interés</th><th class="n">Capital</th></tr>
-      ${pays.map(p => `<tr style="${p.anulado ? 'text-decoration:line-through;opacity:.5' : ''}" class="tap" data-pay="${p.id}"><td>${fdate(p.date)}</td><td class="n">${money(p.amount)}</td><td class="n">${money((p.toInterest || 0) + (p.toMora || 0))}</td><td class="n">${money(p.toCapital)}</td></tr>`).join('')}</table>
-      <p class="mute">Toca un pago para ver el recibo. "Interés" incluye mora.</p>` : '<div class="mute">Sin pagos todavía.</div>'}</div>
+      ${pays.map(p => `<tr style="${p.anulado ? 'text-decoration:line-through;opacity:.5' : ''}" class="tap" data-pay="${p.id}"><td>${fdate(p.date)}${!p.anulado && !p.receiptVia ? ' <span style="color:var(--red)">●</span>' : ''}</td><td class="n">${money(p.amount)}</td><td class="n">${money((p.toInterest || 0) + (p.toMora || 0))}</td><td class="n">${money(p.toCapital)}</td></tr>`).join('')}</table>
+      <p class="mute">Toca un pago para ver el recibo. "Interés" incluye mora. <span style="color:var(--red)">●</span> = recibo no entregado.</p>` : '<div class="mute">Sin pagos todavía.</div>'}</div>
     ${isAdmin() && active ? `<h3>Acciones</h3><div class="card">
       ${st.moraDue > 0 ? '<button class="btn sec" id="lwaive">Perdonar mora</button>' : ''}
       ${isC ? '<button class="btn sec" id="lpost">Prórroga (mover cuotas)</button>' : '<button class="btn sec" id="lext">Ampliar (prestar más)</button>'}
@@ -514,7 +514,7 @@ async function openLoan(id) {
       const btn = sh.querySelector('#pgo'); btn.disabled = true; btn.textContent = 'Guardando…';
       try {
         const pay = await registerPayment(id, v, sh.querySelector('#pnote').value.trim(), sh.querySelector('#pmet').value);
-        closeModal(); showReceipt(pay); if (tab !== 'clientes') refresh();
+        if (tab !== 'clientes') refresh(); showReceipt(pay, { fresh: true });
       } catch (e) { toast(errMsg(e)); btn.disabled = false; btn.textContent = 'Registrar pago'; }
     };
   }
@@ -574,7 +574,7 @@ async function registerPayment(loanId, amount, note, method = 'efectivo') {
       collectorId: L.collectorId || me.uid, byUid: me.uid, byName: me.name, loanType: L.type || 'reditos',
       amount: r2(amount), toMora: r.toMora, toInterest: r.toInterest, toCapital: r.toCapital,
       capitalAfter: r.after.capital, interestAfter: r.after.interest, moraAfter: r.after.mora, totalAfter: r.after.total,
-      method, date, note: note || '', anulado: false, createdAt: serverTimestamp(), prev
+      method, date, time: new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' }), note: note || '', anulado: false, createdAt: serverTimestamp(), prev
     };
     return { pay, loanUpdate: { ...r.updates, lastPaymentId: payRef.id, updatedAt: serverTimestamp() } };
   };
@@ -616,37 +616,193 @@ async function voidPayment(p) {
 }
 
 // ---------- RECIBO ----------
-function receiptText(p) {
+function receiptLines(p, copy) {
+  const saldado = p.totalAfter !== undefined ? p.totalAfter <= 0 : p.capitalAfter <= 0 && p.interestAfter <= 0;
   return [
-    `*${settings.businessName}*`,
-    `Recibo de pago #${p.id.slice(-6).toUpperCase()}`,
-    `Fecha: ${fdate(p.date)}`,
-    `Cliente: ${p.clientName}`,
-    ``,
-    `Pagó: ${money(p.amount)} (${METHODS[p.method] || 'Efectivo'})`,
-    p.toMora > 0 ? `  A mora: ${money(p.toMora)}` : null,
-    `  A interés: ${money(p.toInterest)}`,
-    `  A capital: ${money(p.toCapital)}`,
-    ``,
-    `Capital pendiente: ${money(p.capitalAfter)}`,
-    p.totalAfter !== undefined ? `Saldo total pendiente: ${money(p.totalAfter)}` : (p.interestAfter > 0 ? `Interés atrasado: ${money(p.interestAfter)}` : null),
-    (p.totalAfter !== undefined ? p.totalAfter <= 0 : p.capitalAfter <= 0 && p.interestAfter <= 0) ? `✅ PRÉSTAMO SALDADO` : null,
-    `Cobrado por: ${p.byName}`,
-    p.anulado ? `*** PAGO ANULADO ***` : null,
-  ].filter(x => x !== null).join('\n');
+    ['center-big', settings.businessName],
+    ['center', 'RECIBO DE PAGO'],
+    ['center', '#' + p.id.slice(-6).toUpperCase() + (copy ? '  (COPIA)' : '')],
+    ['line'],
+    ['kv', 'Fecha', fdate(p.date) + (p.time ? ' ' + p.time : '')],
+    ['kv', 'Cliente', p.clientName],
+    ['line'],
+    ['kv-big', 'PAGO', money(p.amount)],
+    ['kv', 'Forma', METHODS[p.method] || 'Efectivo'],
+    p.toMora > 0 ? ['kv', ' A mora', money(p.toMora)] : null,
+    ['kv', ' A interés', money(p.toInterest)],
+    ['kv', ' A capital', money(p.toCapital)],
+    ['line'],
+    ['kv', 'Capital pend.', money(p.capitalAfter)],
+    p.totalAfter !== undefined ? ['kv', 'Saldo total', money(p.totalAfter)] : null,
+    saldado ? ['center', '*** PRÉSTAMO SALDADO ***'] : null,
+    ['kv', 'Cobrado por', p.byName],
+    p.anulado ? ['center', '*** PAGO ANULADO ***'] : null,
+    ['line'],
+    ['center', 'Gracias por su pago'],
+    ['center', 'Conserve este recibo'],
+  ].filter(Boolean);
 }
-function showReceipt(p) {
-  const txt = receiptText(p);
+const W = 32; // caracteres por línea en impresora de 58 mm
+const ascii = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7E]/g, '');
+function lineText([k, a, b]) {
+  if (k === 'line') return '-'.repeat(W);
+  if (k === 'center' || k === 'center-big') return a;
+  const left = a + ':', right = String(b ?? '');
+  return left.length + 1 + right.length <= W ? left + ' '.repeat(W - left.length - right.length) + right : left + '\n  ' + right;
+}
+function receiptText(p, copy) {
+  return receiptLines(p, copy).map(l => l[0] === 'line' ? '' : l[0].startsWith('center') ? l[1] : `${l[1].trim()}: ${l[2]}`).join('\n')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+// ----- Impresora Bluetooth (Android + Chrome) -----
+const PRINTER_SERVICES = [
+  '000018f0-0000-1000-8000-00805f9b34fb', 'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455', '0000ff00-0000-1000-8000-00805f9b34fb',
+  '0000ffe0-0000-1000-8000-00805f9b34fb', '0000fff0-0000-1000-8000-00805f9b34fb',
+  '0000ae30-0000-1000-8000-00805f9b34fb', '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
+];
+const btSupported = () => !!(navigator.bluetooth && navigator.bluetooth.requestDevice);
+let printer = null; // { device, ch }
+async function findWritable(server) {
+  const services = await server.getPrimaryServices();
+  for (const s of services) {
+    for (const c of await s.getCharacteristics()) {
+      if (c.properties.write || c.properties.writeWithoutResponse) return c;
+    }
+  }
+  throw new Error('La impresora no aceptó la conexión. Prueba apagarla y encenderla.');
+}
+async function connectPrinter(forceNew) {
+  if (!btSupported()) throw new Error('Este teléfono no permite Bluetooth desde el navegador. Usa "Compartir recibo".');
+  if (!forceNew && printer && printer.device.gatt.connected) return printer;
+  let device = !forceNew && printer ? printer.device : null;
+  if (!device) device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: PRINTER_SERVICES });
+  const server = await device.gatt.connect();
+  printer = { device, ch: await findWritable(server) };
+  try { localStorage.setItem('printerName', device.name || 'Impresora'); } catch (_) {}
+  device.addEventListener('gattserverdisconnected', () => updatePrinterBadge());
+  updatePrinterBadge();
+  return printer;
+}
+function escpos(p, copy) {
+  const out = [], push = (...b) => out.push(...b), txt = s => { for (const ch of ascii(s)) out.push(ch.charCodeAt(0)); };
+  push(0x1B, 0x40); // iniciar
+  for (const l of receiptLines(p, copy)) {
+    const [k] = l;
+    if (k.startsWith('center')) push(0x1B, 0x61, 1); else push(0x1B, 0x61, 0);
+    if (k === 'center-big') push(0x1D, 0x21, 0x11, 0x1B, 0x45, 1);
+    if (k === 'kv-big') push(0x1B, 0x45, 1);
+    txt(lineText(l)); push(0x0A);
+    if (k === 'center-big' || k === 'kv-big') push(0x1D, 0x21, 0x00, 0x1B, 0x45, 0);
+  }
+  push(0x1B, 0x61, 0, 0x1B, 0x64, 4, 0x1D, 0x56, 0x42, 0x00); // avanzar y cortar
+  return new Uint8Array(out);
+}
+async function btPrint(p, copy) {
+  const pr = await connectPrinter(false);
+  const data = escpos(p, copy);
+  const noResp = pr.ch.properties.writeWithoutResponse && !pr.ch.properties.write;
+  for (let i = 0; i < data.length; i += 20) {
+    const chunk = data.slice(i, i + 20);
+    if (noResp) { await pr.ch.writeValueWithoutResponse(chunk); await new Promise(r => setTimeout(r, 15)); }
+    else await pr.ch.writeValue(chunk);
+  }
+}
+function printerStatusHtml() {
+  let name = ''; try { name = localStorage.getItem('printerName') || ''; } catch (_) {}
+  const on = printer && printer.device.gatt.connected;
+  if (!btSupported()) return '<span class="mute">Este teléfono no permite impresora Bluetooth desde el navegador (iPhone). Usa "Compartir recibo".</span>';
+  return on ? `<span style="color:var(--green)">● Conectada: ${esc(printer.device.name || name)}</span>` : `<span class="mute">○ No conectada${name ? ' (última: ' + esc(name) + ')' : ''}</span>`;
+}
+function updatePrinterBadge() { const el = document.querySelector('#pstat'); if (el) el.innerHTML = printerStatusHtml(); }
+
+// ----- Recibo como imagen (iPhone y respaldo) -----
+function receiptCanvas(p, copy) {
+  const lines = receiptLines(p, copy), w = 576, pad = 28, lh = 34;
+  const c = document.createElement('canvas'); c.width = w; c.height = pad * 2 + lines.length * lh + 30;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.fillStyle = '#111';
+  let y = pad + 26;
+  for (const l of lines) {
+    const [k, a, b] = l;
+    if (k === 'line') { g.fillRect(pad, y - 12, w - pad * 2, 2); }
+    else if (k.startsWith('center')) {
+      g.font = k === 'center-big' ? 'bold 30px system-ui, sans-serif' : '22px system-ui, sans-serif';
+      g.textAlign = 'center'; g.fillText(a, w / 2, y);
+    } else {
+      g.font = (k === 'kv-big' ? 'bold 28px' : '22px') + ' system-ui, sans-serif';
+      g.textAlign = 'left'; g.fillText(a.trim(), pad, y);
+      g.textAlign = 'right'; g.fillText(String(b ?? ''), w - pad, y);
+    }
+    y += lh;
+  }
+  return c;
+}
+async function shareReceiptImage(p, copy) {
+  const c = receiptCanvas(p, copy);
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  const file = new File([blob], `recibo-${p.id.slice(-6).toUpperCase()}.png`, { type: 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    await navigator.share({ files: [file], title: 'Recibo de pago', text: `Recibo ${settings.businessName}` });
+  } else {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
+  }
+}
+
+// ----- Registro de entrega del recibo (prueba de pago) -----
+async function markReceipt(p, via) {
+  p.receiptVia = via; p.receiptCount = (p.receiptCount || 0) + 1;
+  try { await updateDoc(doc(db, 'payments', p.id), { receiptVia: via, receiptAt: serverTimestamp(), receiptCount: increment(1) }); }
+  catch (e) { toast('No se pudo registrar el recibo: ' + errMsg(e)); }
+}
+const RECEIPT_VIA = { bluetooth: 'Impreso (Bluetooth)', imagen: 'Imagen compartida', whatsapp: 'WhatsApp', impreso: 'Impreso' };
+const receiptBadge = p => p.anulado ? '' : p.receiptVia
+  ? `<span class="badge done">🧾 ${RECEIPT_VIA[p.receiptVia] || 'Entregado'}</span>`
+  : '<span class="badge late">Sin recibo</span>';
+
+function showReceipt(p, opts = {}) {
+  const copy = (p.receiptCount || 0) > 0;
+  const txt = receiptText(p, copy);
   const sh = openModal(`
-    <h2>Recibo</h2>
+    <h2>Recibo ${receiptBadge(p)}</h2>
+    ${opts.fresh ? '<div class="split"><b>Pago registrado.</b> Entrega el recibo al cliente antes de cerrar.</div>' : ''}
     <pre class="receipt">${esc(txt)}</pre>
+    <div class="card" style="padding:10px"><b>🖨️ Impresora</b> <span id="pstat">${printerStatusHtml()}</span></div>
+    ${btSupported() ? `<button class="btn" id="rbt">🖨️ Imprimir Bluetooth</button>` : ''}
     <div class="btns">
-      <a class="btn" style="text-align:center;text-decoration:none" target="_blank" href="${waLink(p.clientPhone, txt)}">WhatsApp</a>
-      <button class="btn sec" id="rprint">Imprimir</button>
+      <button class="btn ${btSupported() ? 'sec' : ''}" id="rimg">📤 Compartir recibo</button>
+      <a class="btn sec" style="text-align:center;text-decoration:none" target="_blank" id="rwa" href="${waLink(p.clientPhone, txt)}">WhatsApp</a>
     </div>
+    <div class="btns"><button class="btn sec sm" id="rprint">Otra impresora (AirPrint / sistema)</button>${btSupported() ? '<button class="btn sec sm" id="rnew">Cambiar impresora</button>' : ''}</div>
     ${isAdmin() && !p.anulado ? `<div class="btns"><button class="btn warn sm" id="rvoid">Anular este pago</button></div>` : ''}`);
-  sh.querySelector('#rprint').onclick = () => printHtml('Recibo', `<pre style="max-width:300px">${esc(txt.replace(/\*/g, ''))}</pre>`);
-  const v = sh.querySelector('#rvoid');
+  const $r = s => sh.querySelector(s);
+  const doBt = async (force) => {
+    const b = $r('#rbt'); if (b) { b.disabled = true; b.textContent = 'Imprimiendo…'; }
+    try {
+      if (force) await connectPrinter(true);
+      await btPrint(p, (p.receiptCount || 0) > 0);
+      await markReceipt(p, 'bluetooth'); toast('Recibo impreso');
+      sh.querySelector('h2').innerHTML = 'Recibo ' + receiptBadge(p);
+    } catch (e) {
+      if (e && e.name === 'NotFoundError') toast('No se eligió impresora');
+      else toast(e.message || 'No se pudo imprimir');
+    } finally { if (b) { b.disabled = false; b.textContent = '🖨️ Imprimir Bluetooth'; } updatePrinterBadge(); }
+  };
+  if ($r('#rbt')) $r('#rbt').onclick = () => doBt(false);
+  if ($r('#rnew')) $r('#rnew').onclick = () => doBt(true);
+  $r('#rimg').onclick = async () => {
+    try { await shareReceiptImage(p, (p.receiptCount || 0) > 0); await markReceipt(p, 'imagen'); sh.querySelector('h2').innerHTML = 'Recibo ' + receiptBadge(p); }
+    catch (e) { if (e && e.name !== 'AbortError') toast('No se pudo compartir'); }
+  };
+  $r('#rwa').onclick = () => { markReceipt(p, 'whatsapp').then(() => { sh.querySelector('h2').innerHTML = 'Recibo ' + receiptBadge(p); }); };
+  $r('#rprint').onclick = () => {
+    printHtml('Recibo', `<pre style="max-width:300px">${esc(receiptLines(p, (p.receiptCount || 0) > 0).map(lineText).join('\n'))}</pre>`);
+    markReceipt(p, 'impreso');
+  };
+  // Si la impresora ya está conectada, el recibo de un pago nuevo se imprime solo
+  if (opts.fresh && printer && printer.device.gatt.connected) doBt(false);
+  const v = $r('#rvoid');
   if (v) v.onclick = async () => {
     if (!confirm('¿Anular este pago? El préstamo vuelve a como estaba antes del pago.')) return;
     try { await voidPayment(p); closeModal(); toast('Pago anulado'); refresh(); } catch (e) { toast(errMsg(e)); }
@@ -1001,6 +1157,7 @@ async function viewCaja(date = todayStr(), who = isAdmin() ? 'all' : me.uid) {
   const tm = t => s(M.filter(m => m.type === t), m => m.amount);
   const entregas = tm('entrega'), gastos = tm('gasto'), desemb = tm('desembolso'), devol = tm('devolucion');
   const enMano = r2(entregas + efectivo - gastos - desemb - devol);
+  const sinRecibo = ok.filter(p => !p.receiptVia).length;
   const label = { entrega: 'Entrega de efectivo', gasto: 'Gasto', desembolso: 'Préstamo entregado', devolucion: 'Efectivo devuelto' };
   view.innerHTML = `<h2>Caja</h2>
     <div class="grid"><input id="cd" type="date" value="${date}">
@@ -1016,11 +1173,15 @@ async function viewCaja(date = todayStr(), who = isAdmin() ? 'all' : me.uid) {
       <hr style="border:0;border-top:1px solid var(--line)">
       <div class="row"><span><b>Efectivo que debe tener en mano</b></span><span class="big">${money(enMano)}</span></div>
     </div>
+    <div class="card"><div class="row"><b>🖨️ Impresora</b><span id="pstat">${printerStatusHtml()}</span></div>
+      ${btSupported() ? '<div class="btns"><button class="btn sec sm" id="pcon">Conectar impresora</button><button class="btn sec sm" id="ptest">Imprimir prueba</button></div>' : ''}</div>
+    ${sinRecibo ? `<div class="card" style="border-color:var(--red)"><b style="color:var(--red)">⚠️ ${sinRecibo} pago(s) sin recibo entregado</b><div class="mute">Toca el pago para imprimir o enviar el recibo.</div></div>` : ok.length ? '<div class="card"><b style="color:var(--green)">✓ Todos los pagos tienen recibo</b></div>' : ''}
     <div class="btns"><button class="btn sec" id="mg">➖ Gasto</button>${isAdmin() ? '<button class="btn sec" id="me">➕ Entrega</button><button class="btn sec" id="md">↩️ Devolución</button>' : ''}</div>
     <h3>Pagos (${ok.length})</h3>
     ${P.length ? P.map(p => `<div class="card tap" data-id="${p.id}" style="${p.anulado ? 'opacity:.5' : ''}">
       <div class="row"><b>${esc(p.clientName)}</b><b>${money(p.amount)}</b></div>
-      <div class="mute">${METHODS[p.method] || 'Efectivo'} · Interés ${money((p.toInterest || 0) + (p.toMora || 0))} · Capital ${money(p.toCapital)} · ${esc(p.byName)}${p.anulado ? ' · ANULADO' : ''}</div></div>`).join('')
+      <div>${receiptBadge(p)}</div>
+      <div class="mute">${p.time ? esc(p.time) + ' · ' : ''}${METHODS[p.method] || 'Efectivo'} · Interés ${money((p.toInterest || 0) + (p.toMora || 0))} · Capital ${money(p.toCapital)} · ${esc(p.byName)}${p.anulado ? ' · ANULADO' : ''}</div></div>`).join('')
       : '<div class="empty">No hay pagos en esta fecha.</div>'}
     <h3>Movimientos de caja</h3>
     ${M.length ? M.map(m => `<div class="card"><div class="row"><b>${label[m.type] || m.type}</b><b>${money(m.amount)}</b></div>
@@ -1030,6 +1191,12 @@ async function viewCaja(date = todayStr(), who = isAdmin() ? 'all' : me.uid) {
   const reload = () => viewCaja($('#cd').value, $('#cw') ? $('#cw').value : who).catch(e => toast(errMsg(e)));
   $('#cd').onchange = reload; if ($('#cw')) $('#cw').onchange = reload;
   view.querySelectorAll('[data-id]').forEach(el => el.onclick = () => showReceipt(P.find(p => p.id === el.dataset.id)));
+  if ($('#pcon')) $('#pcon').onclick = async () => { try { await connectPrinter(true); toast('Impresora conectada'); } catch (e) { if (!e || e.name !== 'NotFoundError') toast(e.message || 'No se pudo conectar'); } updatePrinterBadge(); };
+  if ($('#ptest')) $('#ptest').onclick = async () => {
+    try { await btPrint({ id: 'PRUEBA', date: todayStr(), time: '', clientName: 'Prueba de impresora', amount: 0, toInterest: 0, toCapital: 0, capitalAfter: 0, totalAfter: 1, byName: me.name, method: 'efectivo' }); toast('Prueba enviada'); }
+    catch (e) { if (!e || e.name !== 'NotFoundError') toast(e.message || 'No se pudo imprimir'); }
+    updatePrinterBadge();
+  };
   view.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     if (!confirm('¿Borrar este movimiento?')) return;
     await deleteDoc(doc(db, 'cashmoves', b.dataset.del)); toast('Borrado'); reload();
