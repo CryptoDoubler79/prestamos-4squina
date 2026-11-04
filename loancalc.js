@@ -303,3 +303,19 @@ export function ratePerCuota(mode, value, months, n) {
 // Para el método francés: tasa por período a partir de una tasa mensual
 export const PERIOD_DAYS = { diario: 1, semanal: 7, quincenal: 15, mensual: 30 };
 export function monthlyToPeriod(monthly, freq) { return monthly * PERIOD_DAYS[freq] / 30; }
+
+// ---------- plazo en semanas o meses ----------
+// term = { u: 'sem' | 'mes', n }
+export const termEnd = (start, t) => t.u === 'sem' ? addDays(start, 7 * t.n) : addMonths(start, t.n);
+export const termMonthsOf = t => t.u === 'sem' ? t.n * 7 / 30 : t.n;
+export const termLabel = t => t.u === 'sem' ? `${t.n} ${t.n === 1 ? 'semana' : 'semanas'}` : `${t.n} ${t.n === 1 ? 'mes' : 'meses'}`;
+// Cuántas cuotas caben hasta el fin del plazo (mínimo 1)
+export function cuotasUntil(start, freq, end, skipSundays = false) {
+  let n = 0, cur = start;
+  while (true) {
+    cur = freq === 'mensual' ? addMonths(start, n + 1) : nextDueDate(cur, freq, skipSundays);
+    if (cur > end) break;
+    n++;
+  }
+  return Math.max(1, n);
+}

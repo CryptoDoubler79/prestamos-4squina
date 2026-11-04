@@ -80,7 +80,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, cuotasForTerm, ratePerCuota, monthlyToPeriod } from "./loancalc.js?v=6";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil } from "./loancalc.js?v=7";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -283,7 +283,8 @@ function go(t) {
 const refresh = () => go(tab);
 
 // ---------- utilidades extra ----------
-const plazoTxt = L => L.termMonths ? ` · ${L.termMonths} ${L.termMonths === 1 ? 'mes' : 'meses'}` : '';
+const loanTerm = L => L.termUnit ? { u: L.termUnit, n: L.termN } : L.termMonths ? { u: 'mes', n: L.termMonths } : null;
+const plazoTxt = L => loanTerm(L) ? ` · ${termLabel(loanTerm(L))}` : '';
 const typeLabel = L => L.type === 'cuotas'
   ? `${L.n} cuotas ${(FREQ[L.freq] || '').toLowerCase()}es de ${money(L.schedule && L.schedule[0] ? L.schedule[0].amount : 0)}${plazoTxt(L)}`
   : `Réditos ${pct(L.rateWeekly)} semanal${plazoTxt(L)}`;
@@ -927,8 +928,8 @@ async function printContract(L) {
     ? `En caso de atraso, EL DEUDOR pagará un cargo por mora de ${L.mora.type === 'pct' ? L.mora.value + (isC ? '% del monto de la cuota vencida' : '% del capital pendiente') : money(L.mora.value)} por cada día de atraso${L.mora.grace ? `, después de ${L.mora.grace} días de gracia` : ''}.`
     : '';
   const terms = isC
-    ? `EL DEUDOR se compromete a pagar dicha suma más los intereses convenidos (${pct(L.ratePeriod)} por cuota, método ${L.method === 'frances' ? 'francés' : 'de interés fijo'}) en ${L.schedule.length} cuotas ${(FREQ[L.freq] || '').toLowerCase()}es${L.termMonths ? ` (plazo de ${L.termMonths} ${L.termMonths === 1 ? 'mes' : 'meses'})` : ''}, según el calendario siguiente, para un total de ${money(L.schedule.reduce((t, x) => t + x.amount, 0))}:`
-    : `EL DEUDOR pagará un interés de ${pct(L.rateWeekly)} semanal sobre el capital pendiente, calculado por día, pudiendo abonar al capital en cualquier momento. ${L.maturityDate ? `El capital será devuelto a más tardar el <b>${fdate(L.maturityDate)}</b> (plazo de ${L.termMonths} ${L.termMonths === 1 ? 'mes' : 'meses'}).` : 'El capital será devuelto en la fecha que acuerden las partes o a simple requerimiento de EL ACREEDOR con aviso de treinta (30) días.'}`;
+    ? `EL DEUDOR se compromete a pagar dicha suma más los intereses convenidos (${pct(L.ratePeriod)} por cuota, método ${L.method === 'frances' ? 'francés' : 'de interés fijo'}) en ${L.schedule.length} cuotas ${(FREQ[L.freq] || '').toLowerCase()}es${loanTerm(L) ? ` (plazo de ${termLabel(loanTerm(L))})` : ''}, según el calendario siguiente, para un total de ${money(L.schedule.reduce((t, x) => t + x.amount, 0))}:`
+    : `EL DEUDOR pagará un interés de ${pct(L.rateWeekly)} semanal sobre el capital pendiente, calculado por día, pudiendo abonar al capital en cualquier momento. ${L.maturityDate ? `El capital será devuelto a más tardar el <b>${fdate(L.maturityDate)}</b> ${loanTerm(L) ? `(plazo de ${termLabel(loanTerm(L))})` : ''}.` : 'El capital será devuelto en la fecha que acuerden las partes o a simple requerimiento de EL ACREEDOR con aviso de treinta (30) días.'}`;
   printHtml('Contrato de préstamo', `
     <h1>CONTRATO DE PRÉSTAMO Y PAGARÉ</h1>
     <p>En ${esc(S.city || '__________')}, República Dominicana, a los ${fdate(L.startDate)}.</p>
@@ -1102,7 +1103,8 @@ async function pickClientForLoan() {
 function loanForm(c, opts = {}) {
   const { renew, carried = 0, quote } = opts;
   const dm = settings.defaultMora || { type: 'none', value: 0, grace: 0 };
-  let type = renew ? (renew.type || 'reditos') : 'reditos', rate = 0.20, months = renew ? (renew.termMonths || 0) : 1;
+  let type = renew ? (renew.type || 'reditos') : 'reditos', rate = 0.20;
+  let term = renew ? loanTerm(renew) : { u: 'mes', n: 1 };
   const title = quote ? 'Cotizar préstamo' : renew ? `Renovar préstamo de ${esc(c.name)}` : `Préstamo para ${esc(c.name)}`;
   const sh = openModal(`<h2>${title}</h2>
     ${renew ? `<div class="split"><b>Reenganche:</b> lo que debe hoy (<b>${money(carried)}</b>) se descuenta del nuevo préstamo. El cliente recibe la diferencia.</div>` : ''}
@@ -1117,8 +1119,16 @@ function loanForm(c, opts = {}) {
     </div>
     <label>Plazo</label>
     <div class="chips">
-      <button class="chip on" data-m="1">1 mes</button><button class="chip" data-m="2">2 meses</button><button class="chip" data-m="3">3 meses</button><button class="chip" data-m="0" id="lm0">Otro</button>
+      <button class="chip" data-term="sem:1">1 sem</button><button class="chip" data-term="sem:2">2 sem</button><button class="chip" data-term="sem:3">3 sem</button>
     </div>
+    <div class="chips">
+      <button class="chip" data-term="mes:1">1 mes</button><button class="chip" data-term="mes:2">2 meses</button><button class="chip" data-term="mes:3">3 meses</button><button class="chip" data-term="otro">Otro</button>
+    </div>
+    <div id="ltother" hidden class="grid">
+      <div><input id="ltn" type="number" inputmode="numeric" min="1" placeholder="Cantidad (vacío = sin plazo)"></div>
+      <div><select id="ltu"><option value="mes">meses</option><option value="sem">semanas</option></select></div>
+    </div>
+    <p class="mute" id="ltinfo" style="margin-top:-4px"></p>
     <div id="fred">
       <label>Interés semanal</label>
       <div class="chips">
@@ -1158,11 +1168,18 @@ function loanForm(c, opts = {}) {
     $s('#lfq').value = renew.freq; $s('#lme').value = renew.method || 'plano';
     if (renew.interestMode) { $s('#lim').value = renew.interestMode; $s('#lrp').value = renew.interestValue; }
     else { $s('#lim').value = 'cuota'; $s('#lrp').value = r2(renew.ratePeriod * 100); }
-    if (!renew.termMonths) $s('#lnn').value = renew.n;
+    if (!loanTerm(renew)) $s('#lnn').value = renew.n;
     if (renew.renewAt) $s('#lrn').value = renew.renewAt;
   }
   if (renew && renew.feeType) { $s('#lft').value = renew.feeType; $s('#lfv').value = renew.feeValue || ''; }
-  const markMonths = () => sh.querySelectorAll('[data-m]').forEach(x => x.classList.toggle('on', parseInt(x.dataset.m, 10) === months));
+  const STD = ['sem:1', 'sem:2', 'sem:3', 'mes:1', 'mes:2', 'mes:3'];
+  let termOther = !!(term && !STD.includes(term.u + ':' + term.n)) || !term;
+  if (termOther && term) { $s('#ltn').value = term.n; $s('#ltu').value = term.u; }
+  const markMonths = () => {
+    const key = term ? term.u + ':' + term.n : '';
+    sh.querySelectorAll('[data-term]').forEach(x => x.classList.toggle('on', termOther ? x.dataset.term === 'otro' : x.dataset.term === key));
+    $s('#ltother').hidden = !termOther;
+  };
   markMonths();
   if (renew && renew.type !== 'cuotas' && renew.rateWeekly) {
     rate = renew.rateWeekly;
@@ -1177,26 +1194,30 @@ function loanForm(c, opts = {}) {
     const cash = r2(principal - (renew ? carried : 0) - fee);
     const extra = { fee, feeType, feeValue, cash };
     const start = $s('#ld') ? ($s('#ld').value || todayStr()) : todayStr();
+    if (termOther) { const tn = parseInt($s('#ltn').value, 10); term = tn > 0 ? { u: $s('#ltu').value, n: tn } : null; }
+    const tEnd = term ? termEnd(start, term) : null;
+    const termInfo = { termUnit: term ? term.u : null, termN: term ? term.n : 0, termMonths: term ? termMonthsOf(term) : 0 };
     const mora = { type: $s('#lmt').value, value: parseFloat($s('#lmv').value) || 0, grace: parseInt($s('#lmg').value, 10) || 0 };
     if (type === 'reditos') {
       const r = rate === 'otro' ? (parseFloat($s('#lop').value) || 0) / 100 : rate;
-      return { ...extra, type, principal, rateWeekly: r, start, mora, termMonths: months, maturityDate: months ? addMonths(start, months) : null };
+      return { ...extra, ...termInfo, type, principal, rateWeekly: r, start, mora, maturityDate: tEnd };
     }
     const freq = $s('#lfq').value, skipSundays = freq === 'diario' && $s('#lsun').checked;
-    if (months) $s('#lnn').value = cuotasForTerm(start, freq, months, skipSundays);
-    $s('#lnn').disabled = !!months;
+    if (term) $s('#lnn').value = cuotasUntil(start, freq, tEnd, skipSundays);
+    $s('#lnn').disabled = !!term;
     const n = parseInt($s('#lnn').value, 10) || 0, method = $s('#lme').value;
     const interestMode = $s('#lim').value, interestValue = parseFloat($s('#lrp').value) || 0;
-    const termForRate = months || (n * ({ diario: 1, semanal: 7, quincenal: 15, mensual: 30 }[freq]) / 30);
+    const termForRate = term ? termMonthsOf(term) : (n * ({ diario: 1, semanal: 7, quincenal: 15, mensual: 30 }[freq]) / 30);
     const ratePeriod = method === 'frances' && interestMode === 'mensual'
       ? monthlyToPeriod(interestValue / 100, freq)
       : ratePerCuota(interestMode, interestValue, termForRate, n);
-    return { ...extra, type, principal, start, mora, freq, n, ratePeriod, method, skipSundays, termMonths: months, interestMode, interestValue, renewAt: parseInt($s('#lrn').value, 10) || 0 };
+    return { ...extra, ...termInfo, type, principal, start, mora, freq, n, ratePeriod, method, skipSundays, interestMode, interestValue, renewAt: parseInt($s('#lrn').value, 10) || 0 };
   };
   const prev = () => {
     $s('#fred').hidden = type !== 'reditos'; $s('#fcuo').hidden = type !== 'cuotas';
     $s('#lsunw').hidden = $s('#lfq').value !== 'diario';
     const p = params(), out = $s('#lprev');
+    $s('#ltinfo').textContent = term ? `Plazo: ${termLabel(term)} · termina el ${fdate(termEnd(p.start, term))}` : 'Sin plazo fijo';
     if (!(p.principal > 0)) { out.textContent = 'Escribe el monto.'; return; }
     const cashLine = (renew || p.fee) ? `<div style="margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--line)">${renew ? `Nuevo préstamo ${money(p.principal)} − debe ${money(carried)}${p.fee ? ` − contrato ${money(p.fee)}` : ''}` : `Préstamo ${money(p.principal)} − contrato ${money(p.fee)}`}<br><b>El cliente recibe en mano: <span style="color:${p.cash < 0 ? 'var(--red)' : 'var(--green)'}">${money(p.cash)}</span></b>${p.cash < 0 ? '<br><span style="color:var(--red)">El nuevo préstamo debe ser mayor que lo que debe.</span>' : ''}</div>` : '';
     if (p.type === 'reditos') {
@@ -1213,11 +1234,15 @@ function loanForm(c, opts = {}) {
       Primera cuota: ${fdate(sc[0].due)} · Última: ${fdate(sc[sc.length - 1].due)}
       <details style="margin-top:6px"><summary>Ver calendario</summary>${scheduleTable({ schedule: sc }, '0000-00-00')}</details>`;
   };
-  sh.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { months = parseInt(b.dataset.m, 10); markMonths(); prev(); });
+  sh.querySelectorAll('[data-term]').forEach(b => b.onclick = () => {
+    if (b.dataset.term === 'otro') { termOther = true; }
+    else { termOther = false; const [u, n] = b.dataset.term.split(':'); term = { u, n: Number(n) }; }
+    markMonths(); prev();
+  });
   sh.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => {
     const n = parseInt(b.dataset.tpl, 10);
     type = 'cuotas'; sh.querySelectorAll('[data-t]').forEach(x => x.classList.toggle('on', x.dataset.t === 'cuotas'));
-    months = 0; markMonths();
+    termOther = false; term = { u: 'sem', n }; markMonths();
     $s('#lfq').value = 'semanal'; $s('#lnn').value = n; $s('#lim').value = 'total'; $s('#lrp').value = 30; $s('#lme').value = 'plano';
     $s('#lrn').value = n === 13 ? 11 : 8;
     sh.querySelectorAll('[data-tpl]').forEach(x => x.classList.toggle('on', x === b)); prev();
@@ -1249,7 +1274,7 @@ function loanForm(c, opts = {}) {
       if (h.bad) warn.push(`⚠️ Tiene ${h.bad} préstamo(s) incobrable(s) en su historial.`);
       if (h.active && !h.lateNow) warn.push(`Tiene ${h.active} préstamo(s) activo(s).`);
     }
-    const plazo = p.termMonths ? ` a ${p.termMonths} ${p.termMonths === 1 ? 'mes' : 'meses'}` : '';
+    const plazo = p.termUnit ? ` a ${termLabel({ u: p.termUnit, n: p.termN })}` : '';
     const desc = p.type === 'reditos' ? `${pct(p.rateWeekly)} semanal (réditos)${plazo}` : `${p.n} cuotas ${FREQ[p.freq].toLowerCase()}es${plazo}, ${pct(p.ratePeriod)} por cuota`;
     if (!confirm(`${warn.length ? warn.join('\n') + '\n\n' : ''}¿${renew ? 'Reenganchar' : 'Crear'} préstamo de ${money(p.principal)} a ${desc} para ${c.name}?\n\nEl cliente recibe en mano: ${money(cash)}${p.fee ? ` (contrato ${money(p.fee)})` : ''}${renew ? ` (se descontó lo que debía: ${money(carried)})` : ''}`)) return;
     const base = {
@@ -1263,9 +1288,9 @@ function loanForm(c, opts = {}) {
       ...(renew ? { renewedFrom: renew.id, carriedOver: carried } : {})
     };
     const data = p.type === 'reditos'
-      ? { ...base, rateWeekly: p.rateWeekly, capitalBalance: p.principal, termMonths: p.termMonths || 0, maturityDate: p.maturityDate }
+      ? { ...base, rateWeekly: p.rateWeekly, capitalBalance: p.principal, termMonths: p.termMonths || 0, termUnit: p.termUnit, termN: p.termN, maturityDate: p.maturityDate }
       : { ...base, freq: p.freq, n: p.n, ratePeriod: p.ratePeriod, method: p.method, skipSundays: p.skipSundays, capitalBalance: p.principal,
-          termMonths: p.termMonths || 0, interestMode: p.interestMode, interestValue: p.interestValue, renewAt: p.renewAt || 0,
+          termMonths: p.termMonths || 0, termUnit: p.termUnit, termN: p.termN, interestMode: p.interestMode, interestValue: p.interestValue, renewAt: p.renewAt || 0,
           schedule: buildSchedule({ principal: p.principal, rate: p.ratePeriod, n: p.n, freq: p.freq, method: p.method, start: p.start, skipSundays: p.skipSundays }) };
     const btn = $s('#lsave'); btn.disabled = true;
     try {
