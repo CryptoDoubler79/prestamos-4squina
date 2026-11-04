@@ -80,7 +80,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, cuotasForTerm, ratePerCuota, monthlyToPeriod } from "./loancalc.js?v=5";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, cuotasForTerm, ratePerCuota, monthlyToPeriod } from "./loancalc.js?v=6";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -343,12 +343,13 @@ async function viewInicio() {
   const monthStart = today.slice(0, 8) + '01';
   const loans = rows(await getDocs(qLoansActive()));
   const paysToday = rows(await getDocs(qPaysByDate(today))).filter(p => !p.anulado);
-  let paysMonth = [], movesMonth = [], pays6 = [];
+  let paysMonth = [], movesMonth = [], pays6 = [], feesMonth = 0;
   const m6 = addMonths(monthStart, -5);
   if (isAdmin()) {
     pays6 = rows(await getDocs(qPaysFrom(m6))).filter(p => !p.anulado);
     paysMonth = pays6.filter(p => p.date >= monthStart);
     movesMonth = rows(await getDocs(query(collection(db, 'cashmoves'), where('date', '>=', monthStart))));
+    feesMonth = r2(rows(await getDocs(query(collection(db, 'loans'), where('startDate', '>=', monthStart)))).reduce((t, L) => t + (L.fee || 0), 0));
   }
   let capital = 0, pend = 0, late = 0, dueToday = 0;
   const paidIds = new Set(paysToday.map(p => p.loanId)), dueIds = new Set(paidIds);
@@ -392,7 +393,7 @@ async function viewInicio() {
       <div class="stat"><span>Interés + mora cobrados</span><b style="color:var(--green)">${money(sum(paysMonth, 'toInterest') + sum(paysMonth, 'toMora'))}</b></div>
       <div class="stat"><span>Capital recuperado</span><b>${money(sum(paysMonth, 'toCapital'))}</b></div>
       <div class="stat"><span>Gastos</span><b>${money(gastosMes)}</b></div>
-      <div class="stat"><span>Ganancia neta</span><b style="color:var(--green)">${money(sum(paysMonth, 'toInterest') + sum(paysMonth, 'toMora') - gastosMes)}</b></div>
+      <div class="stat"><span>Ganancia neta${feesMonth ? ' (incl. contratos ' + money(feesMonth) + ')' : ''}</span><b style="color:var(--green)">${money(sum(paysMonth, 'toInterest') + sum(paysMonth, 'toMora') + feesMonth - gastosMes)}</b></div>
     </div>
     <h3>Intereses por mes</h3>
     <div class="card"><div style="display:flex;align-items:flex-end;gap:8px;height:150px">
@@ -473,7 +474,7 @@ async function viewCobros() {
     $('#list').innerHTML = list.length ? list.map(L => `
       <div class="card tap" data-id="${L.id}">
         <div class="row"><b>${esc(L.clientName)}</b>
-          ${L.st.matured ? '<span class="badge late">Capital vencido</span>' : L.st.late ? `<span class="badge late">Atrasado ${L.st.daysLate} días</span>` : `<span class="badge">${L.type === 'cuotas' ? (L.st.next ? 'Próx. ' + fdate(L.st.next.due) : 'Al día') : L.st.daysSincePay + ' días'}</span>`}</div>
+          ${L.type === 'cuotas' && L.renewAt && L.st.paidCount >= L.renewAt - 1 && !L.st.late ? '<span class="badge done">Puede reenganchar</span>' : L.st.matured ? '<span class="badge late">Capital vencido</span>' : L.st.late ? `<span class="badge late">Atrasado ${L.st.daysLate} días</span>` : `<span class="badge">${L.type === 'cuotas' ? (L.st.next ? 'Próx. ' + fdate(L.st.next.due) : 'Al día') : L.st.daysSincePay + ' días'}</span>`}</div>
         <div class="mute">${esc(typeLabel(L))}</div>
         <div class="row" style="margin-top:6px">
           <div><span class="mute">${L.type === 'cuotas' ? 'Vencido' : 'Interés debe'}</span><div class="big">${money(L.st.dueNow)}</div></div>
@@ -508,18 +509,20 @@ async function openLoan(id) {
   const isC = L.type === 'cuotas';
   const stateBadge = { activo: st.late ? '<span class="badge late">Atrasado</span>' : '<span class="badge">Activo</span>', saldado: '<span class="badge done">Saldado</span>', castigado: '<span class="badge bad">Incobrable</span>', renovado: '<span class="badge done">Renovado</span>' }[L.status] || '';
   const nextC = isC ? L.schedule.find(c => r2(c.amount - c.paid) > 0.004) : null;
+  const canRenew = isC && L.renewAt ? st.paidCount >= L.renewAt - 1 : null;
   const chips = isC
     ? [['Lo vencido', st.dueNow], ['Una cuota', nextC ? r2(nextC.amount - nextC.paid + st.moraDue) : 0], ['Saldar todo', st.total]]
     : [['Rédito de hoy', st.dueNow], ['Una semana', r2(st.moraDue + Math.max(0, st.interestRaw) + (st.interestRaw < st.weekly ? st.weekly - Math.max(0, st.interestRaw) : 0))], ['Saldar todo', st.total]];
   const mora = L.mora && L.mora.type && L.mora.type !== 'none'
     ? `${L.mora.type === 'pct' ? L.mora.value + (isC ? '% de la cuota' : '% del capital') : money(L.mora.value)} por día${L.mora.grace ? `, ${L.mora.grace} días de gracia` : ''}` : 'Sin mora';
   const sh = openModal(`
-    <h2>${esc(L.clientName)} ${stateBadge}</h2>
+    <h2>${esc(L.clientName)} ${stateBadge} ${active && canRenew ? '<span class="badge done">Puede reenganchar</span>' : ''}</h2>
     <div class="card">
       <div class="row"><span class="mute">Prestado</span><b>${money(L.principal)} · ${fdate(L.startDate)}</b></div>
       <div class="row"><span class="mute">Tipo</span><b>${esc(typeLabel(L))}</b></div>
       ${isC ? `<div class="row"><span class="mute">Tasa</span><b>${pct(L.ratePeriod)} por cuota (${L.method === 'frances' ? 'francés' : 'plano'})</b></div>
         <div class="row"><span class="mute">Cuotas pagadas</span><b>${st.paidCount} de ${L.schedule.length}</b></div>
+        ${L.renewAt ? `<div class="row"><span class="mute">Reenganche</span><b style="color:${canRenew ? 'var(--green)' : 'inherit'}">${canRenew ? 'Disponible ahora' : `desde la cuota ${L.renewAt}`}</b></div>` : ''}
         <div class="row"><span class="mute">Vencido hoy</span><b style="color:var(--red)">${money(st.overdue)}</b></div>
         <div class="row"><span class="mute">Saldo pendiente</span><b>${money(st.balance)}</b></div>`
       : `<div class="row"><span class="mute">Capital pendiente</span><b>${money(st.capital)}</b></div>
@@ -531,6 +534,7 @@ async function openLoan(id) {
       <div class="row"><span class="mute">Total para saldar hoy</span><b>${money(st.total)}</b></div>
       <div class="row"><span class="mute">Regla de mora</span><b>${esc(mora)}</b></div>
       <div class="row"><span class="mute">Ganado (interés + mora)</span><b style="color:var(--green)">${money((L.totalInterestPaid || 0) + (L.totalMoraPaid || 0))}</b></div>
+      ${L.fee ? `<div class="row"><span class="mute">Contrato descontado</span><b>${money(L.fee)} (recibió ${money(L.cashGiven ?? (L.principal - L.fee))})</b></div>` : ''}
       ${L.collateral ? `<div class="row"><span class="mute">Garantía</span><b>${esc(L.collateral)}</b></div>` : ''}
       ${L.note ? `<div class="mute" style="margin-top:6px">${esc(L.note)}</div>` : ''}
       <div id="gphoto"></div>
@@ -564,7 +568,7 @@ async function openLoan(id) {
     ${isAdmin() && active ? `<h3>Acciones</h3><div class="card">
       ${st.moraDue > 0 ? '<button class="btn sec" id="lwaive">Perdonar mora</button>' : ''}
       ${isC ? '<button class="btn sec" id="lpost">Prórroga (mover cuotas)</button>' : '<button class="btn sec" id="lext">Ampliar (prestar más)</button>'}
-      <button class="btn sec" id="lrenew">Renovar préstamo</button>
+      <button class="btn ${canRenew ? '' : 'sec'}" id="lrenew">Reenganchar (renovar)</button>
       <button class="btn sec" id="lgar">Garantía / foto</button>
       <button class="btn warn" id="lbad">Marcar incobrable</button>
     </div>` : ''}
@@ -629,6 +633,7 @@ async function openLoan(id) {
     closeModal(); toast('Préstamo ampliado'); openLoan(id);
   });
   on('#lrenew', async () => {
+    if (canRenew === false && !confirm(`Este préstamo permite reenganche desde la cuota ${L.renewAt}. Va por la cuota ${st.paidCount + 1}. ¿Reenganchar de todas formas?`)) return;
     const cs = await getDoc(doc(db, 'clients', L.clientId));
     if (!cs.exists()) return toast('Cliente no encontrado');
     loanForm({ id: cs.id, ...cs.data() }, { renew: L, carried: st.total });
@@ -929,7 +934,7 @@ async function printContract(L) {
     <p>En ${esc(S.city || '__________')}, República Dominicana, a los ${fdate(L.startDate)}.</p>
     <p><b>DE UNA PARTE:</b> ${esc(S.lenderName || '______________________')}, dominicano(a), mayor de edad, portador(a) de la cédula No. ${esc(S.lenderCedula || '______________')}, domiciliado(a) en ${esc(S.lenderAddress || '______________________')}, quien en lo adelante se denominará <b>EL ACREEDOR</b>;</p>
     <p><b>DE LA OTRA PARTE:</b> ${esc(L.clientName)}, portador(a) de la cédula No. ${esc(c.cedula || '______________')}, domiciliado(a) en ${esc(c.address || '______________________')}, teléfono ${esc(c.phone || L.clientPhone || '__________')}, quien en lo adelante se denominará <b>EL DEUDOR</b>.</p>
-    <p><b>PRIMERO:</b> EL ACREEDOR entrega en calidad de préstamo a EL DEUDOR la suma de <b>${money(L.principal)}</b>, que EL DEUDOR declara haber recibido a su entera satisfacción.</p>
+    <p><b>PRIMERO:</b> EL ACREEDOR entrega en calidad de préstamo a EL DEUDOR la suma de <b>${money(L.principal)}</b>, que EL DEUDOR declara haber recibido a su entera satisfacción${L.fee ? `, reconociendo que de dicha suma se descontaron <b>${money(L.fee)}</b> por gastos de contrato` : ''}${L.renewedFrom && L.carriedOver ? `, y que <b>${money(L.carriedOver)}</b> corresponden al saldo de su préstamo anterior, que queda así saldado` : ''}.</p>
     <p><b>SEGUNDO:</b> ${terms}</p>
     ${isC ? `<table><tr><th>#</th><th>Fecha</th><th>Monto</th></tr>${L.schedule.map(x => `<tr><td>${x.n}</td><td>${fdate(x.due)}</td><td>${money(x.amount)}</td></tr>`).join('')}</table>` : ''}
     ${moraTxt ? `<p><b>TERCERO:</b> ${moraTxt}</p>` : ''}
@@ -1100,9 +1105,16 @@ function loanForm(c, opts = {}) {
   let type = renew ? (renew.type || 'reditos') : 'reditos', rate = 0.20, months = renew ? (renew.termMonths || 0) : 1;
   const title = quote ? 'Cotizar préstamo' : renew ? `Renovar préstamo de ${esc(c.name)}` : `Préstamo para ${esc(c.name)}`;
   const sh = openModal(`<h2>${title}</h2>
-    ${renew ? `<div class="split">Lo que debe hoy (<b>${money(carried)}</b>) pasa al nuevo préstamo. Escribe abajo solo el dinero <b>nuevo</b> que le entregas (puede ser 0).</div>` : ''}
+    ${renew ? `<div class="split"><b>Reenganche:</b> lo que debe hoy (<b>${money(carried)}</b>) se descuenta del nuevo préstamo. El cliente recibe la diferencia.</div>` : ''}
+    <label>Plantilla rápida</label>
+    <div class="chips"><button class="chip" data-tpl="13">San 13 semanas<br><small>13 cuotas, 30%</small></button><button class="chip" data-tpl="10">San 10 semanas<br><small>10 cuotas, 30%</small></button></div>
     <div class="chips"><button class="chip ${type === 'reditos' ? 'on' : ''}" data-t="reditos">Réditos<br><small>interés diario</small></button><button class="chip ${type === 'cuotas' ? 'on' : ''}" data-t="cuotas">Cuotas fijas<br><small>con calendario</small></button></div>
-    <label>${renew ? 'Dinero nuevo entregado (RD$)' : 'Monto prestado (RD$)'}</label><input id="la" type="number" inputmode="decimal" step="0.01" min="0" value="${renew ? 0 : ''}">
+    <label>${renew ? 'Monto del nuevo préstamo (RD$)' : 'Monto prestado (RD$)'}</label><input id="la" type="number" inputmode="decimal" step="0.01" min="0" value="${renew ? (renew.principal || '') : ''}">
+    <label>Gasto de contrato (se descuenta al entregar)</label>
+    <div class="grid">
+      <div><select id="lft"><option value="none">Sin gasto</option><option value="fijo">RD$ fijo</option><option value="pct">% del préstamo</option></select></div>
+      <div><input id="lfv" type="number" inputmode="decimal" step="0.01" placeholder="Valor"></div>
+    </div>
     <label>Plazo</label>
     <div class="chips">
       <button class="chip on" data-m="1">1 mes</button><button class="chip" data-m="2">2 meses</button><button class="chip" data-m="3">3 meses</button><button class="chip" data-m="0" id="lm0">Otro</button>
@@ -1125,6 +1137,7 @@ function loanForm(c, opts = {}) {
         <div><label>Porcentaje (%)</label><input id="lrp" type="number" inputmode="decimal" step="0.1" value="20"></div>
         <div><label>Método</label><select id="lme"><option value="plano">Fijo (prestamista)</option><option value="frances">Francés (banco)</option></select></div>
       </div>
+      <label>Reenganche permitido desde la cuota # (opcional)</label><input id="lrn" type="number" inputmode="numeric" min="1" placeholder="Ej. 11">
       <label id="lsunw" style="display:flex;gap:8px;align-items:center;margin-bottom:8px" hidden><input type="checkbox" id="lsun" style="width:auto;margin:0" checked> No cobrar los domingos</label>
     </div>
     <label>Mora por atraso</label>
@@ -1146,7 +1159,9 @@ function loanForm(c, opts = {}) {
     if (renew.interestMode) { $s('#lim').value = renew.interestMode; $s('#lrp').value = renew.interestValue; }
     else { $s('#lim').value = 'cuota'; $s('#lrp').value = r2(renew.ratePeriod * 100); }
     if (!renew.termMonths) $s('#lnn').value = renew.n;
+    if (renew.renewAt) $s('#lrn').value = renew.renewAt;
   }
+  if (renew && renew.feeType) { $s('#lft').value = renew.feeType; $s('#lfv').value = renew.feeValue || ''; }
   const markMonths = () => sh.querySelectorAll('[data-m]').forEach(x => x.classList.toggle('on', parseInt(x.dataset.m, 10) === months));
   markMonths();
   if (renew && renew.type !== 'cuotas' && renew.rateWeekly) {
@@ -1156,12 +1171,16 @@ function loanForm(c, opts = {}) {
     if (!match) { sh.querySelector('[data-r="otro"]').classList.add('on'); rate = 'otro'; $s('#lother').hidden = false; $s('#lop').value = r2(renew.rateWeekly * 100); }
   }
   const params = () => {
-    const principal = r2((parseFloat($s('#la').value) || 0) + (renew ? carried : 0));
+    const principal = r2(parseFloat($s('#la').value) || 0);
+    const feeType = $s('#lft').value, feeValue = parseFloat($s('#lfv').value) || 0;
+    const fee = feeType === 'fijo' ? r2(feeValue) : feeType === 'pct' ? r2(principal * feeValue / 100) : 0;
+    const cash = r2(principal - (renew ? carried : 0) - fee);
+    const extra = { fee, feeType, feeValue, cash };
     const start = $s('#ld') ? ($s('#ld').value || todayStr()) : todayStr();
     const mora = { type: $s('#lmt').value, value: parseFloat($s('#lmv').value) || 0, grace: parseInt($s('#lmg').value, 10) || 0 };
     if (type === 'reditos') {
       const r = rate === 'otro' ? (parseFloat($s('#lop').value) || 0) / 100 : rate;
-      return { type, principal, rateWeekly: r, start, mora, termMonths: months, maturityDate: months ? addMonths(start, months) : null };
+      return { ...extra, type, principal, rateWeekly: r, start, mora, termMonths: months, maturityDate: months ? addMonths(start, months) : null };
     }
     const freq = $s('#lfq').value, skipSundays = freq === 'diario' && $s('#lsun').checked;
     if (months) $s('#lnn').value = cuotasForTerm(start, freq, months, skipSundays);
@@ -1172,27 +1191,37 @@ function loanForm(c, opts = {}) {
     const ratePeriod = method === 'frances' && interestMode === 'mensual'
       ? monthlyToPeriod(interestValue / 100, freq)
       : ratePerCuota(interestMode, interestValue, termForRate, n);
-    return { type, principal, start, mora, freq, n, ratePeriod, method, skipSundays, termMonths: months, interestMode, interestValue };
+    return { ...extra, type, principal, start, mora, freq, n, ratePeriod, method, skipSundays, termMonths: months, interestMode, interestValue, renewAt: parseInt($s('#lrn').value, 10) || 0 };
   };
   const prev = () => {
     $s('#fred').hidden = type !== 'reditos'; $s('#fcuo').hidden = type !== 'cuotas';
     $s('#lsunw').hidden = $s('#lfq').value !== 'diario';
     const p = params(), out = $s('#lprev');
     if (!(p.principal > 0)) { out.textContent = 'Escribe el monto.'; return; }
+    const cashLine = (renew || p.fee) ? `<div style="margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--line)">${renew ? `Nuevo préstamo ${money(p.principal)} − debe ${money(carried)}${p.fee ? ` − contrato ${money(p.fee)}` : ''}` : `Préstamo ${money(p.principal)} − contrato ${money(p.fee)}`}<br><b>El cliente recibe en mano: <span style="color:${p.cash < 0 ? 'var(--red)' : 'var(--green)'}">${money(p.cash)}</span></b>${p.cash < 0 ? '<br><span style="color:var(--red)">El nuevo préstamo debe ser mayor que lo que debe.</span>' : ''}</div>` : '';
     if (p.type === 'reditos') {
       $s('#lmatw').textContent = p.maturityDate ? `El cliente paga el interés cada semana y devuelve el capital a más tardar el ${fdate(p.maturityDate)}. Después de esa fecha el préstamo sale como vencido.` : 'Sin fecha fija: el capital se devuelve cuando el cliente pueda.';
-      out.innerHTML = p.rateWeekly > 0 ? `${renew ? `Nuevo capital: <b>${money(p.principal)}</b><br>` : ''}Interés: <b>${money(p.principal * p.rateWeekly)}</b> por semana · <b>${money(p.principal * p.rateWeekly / 7)}</b> por día<br>${p.maturityDate ? `Vence el capital: <b>${fdate(p.maturityDate)}</b> · Interés en el plazo si no abona: <b style="color:var(--green)">${money(p.principal * p.rateWeekly / 7 * daysBetween(p.start, p.maturityDate))}</b>` : 'El interés corre cada día sobre el capital que quede.'}` : 'Escribe el porcentaje.';
+      out.innerHTML = p.rateWeekly > 0 ? `${cashLine}Interés: <b>${money(p.principal * p.rateWeekly)}</b> por semana · <b>${money(p.principal * p.rateWeekly / 7)}</b> por día<br>${p.maturityDate ? `Vence el capital: <b>${fdate(p.maturityDate)}</b> · Interés en el plazo si no abona: <b style="color:var(--green)">${money(p.principal * p.rateWeekly / 7 * daysBetween(p.start, p.maturityDate))}</b>` : 'El interés corre cada día sobre el capital que quede.'}` : 'Escribe el porcentaje.';
       return;
     }
     if (!(p.n > 0)) { out.textContent = 'Escribe el número de cuotas.'; return; }
     const sc = buildSchedule({ principal: p.principal, rate: p.ratePeriod, n: p.n, freq: p.freq, method: p.method, start: p.start, skipSundays: p.skipSundays });
     const total = r2(sc.reduce((t, x) => t + x.amount, 0));
-    out.innerHTML = `${renew ? `Nuevo préstamo: <b>${money(p.principal)}</b><br>` : ''}Cuota: <b>${money(sc[0].amount)}</b> ${FREQ[p.freq].toLowerCase()}${p.method === 'frances' ? ' (la última puede variar)' : ''}<br>
-      Total a pagar: <b>${money(total)}</b> · Ganancia: <b style="color:var(--green)">${money(total - p.principal)}</b><br>
+    out.innerHTML = `${cashLine}Cuota: <b>${money(sc[0].amount)}</b> ${FREQ[p.freq].toLowerCase()}${p.method === 'frances' ? ' (la última puede variar)' : ''}<br>
+      Total a pagar: <b>${money(total)}</b> · Ganancia: <b style="color:var(--green)">${money(total - p.principal + p.fee)}</b>${p.fee ? ' (incluye contrato)' : ''}<br>
+      ${p.renewAt ? `Reenganche desde la cuota ${p.renewAt}<br>` : ''}
       Primera cuota: ${fdate(sc[0].due)} · Última: ${fdate(sc[sc.length - 1].due)}
       <details style="margin-top:6px"><summary>Ver calendario</summary>${scheduleTable({ schedule: sc }, '0000-00-00')}</details>`;
   };
   sh.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { months = parseInt(b.dataset.m, 10); markMonths(); prev(); });
+  sh.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => {
+    const n = parseInt(b.dataset.tpl, 10);
+    type = 'cuotas'; sh.querySelectorAll('[data-t]').forEach(x => x.classList.toggle('on', x.dataset.t === 'cuotas'));
+    months = 0; markMonths();
+    $s('#lfq').value = 'semanal'; $s('#lnn').value = n; $s('#lim').value = 'total'; $s('#lrp').value = 30; $s('#lme').value = 'plano';
+    $s('#lrn').value = n === 13 ? 11 : 8;
+    sh.querySelectorAll('[data-tpl]').forEach(x => x.classList.toggle('on', x === b)); prev();
+  });
   sh.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { type = b.dataset.t; sh.querySelectorAll('[data-t]').forEach(x => x.classList.toggle('on', x === b)); prev(); });
   sh.querySelectorAll('[data-r]').forEach(ch => ch.onclick = () => {
     sh.querySelectorAll('[data-r]').forEach(x => x.classList.remove('on')); ch.classList.add('on');
@@ -1204,8 +1233,9 @@ function loanForm(c, opts = {}) {
   if (quote) return;
   $s('#lsave').onclick = async () => {
     const p = params();
-    const cash = r2(parseFloat($s('#la').value) || 0);
+    const cash = p.cash;
     if (!(p.principal > 0)) return toast('Escribe el monto');
+    if (cash < 0) return toast('El nuevo préstamo debe ser mayor que lo que debe' + (p.fee ? ' más el contrato' : ''));
     if (daysBetween(p.start, todayStr()) < 0) return toast('La fecha no puede ser futura');
     if (p.type === 'reditos' && !(p.rateWeekly > 0)) return toast('Escribe el porcentaje');
     if (p.type === 'cuotas' && !(p.n > 0)) return toast('Escribe el número de cuotas');
@@ -1221,7 +1251,7 @@ function loanForm(c, opts = {}) {
     }
     const plazo = p.termMonths ? ` a ${p.termMonths} ${p.termMonths === 1 ? 'mes' : 'meses'}` : '';
     const desc = p.type === 'reditos' ? `${pct(p.rateWeekly)} semanal (réditos)${plazo}` : `${p.n} cuotas ${FREQ[p.freq].toLowerCase()}es${plazo}, ${pct(p.ratePeriod)} por cuota`;
-    if (!confirm(`${warn.length ? warn.join('\n') + '\n\n' : ''}¿${renew ? 'Renovar' : 'Crear'} préstamo de ${money(p.principal)} a ${desc} para ${c.name}?`)) return;
+    if (!confirm(`${warn.length ? warn.join('\n') + '\n\n' : ''}¿${renew ? 'Reenganchar' : 'Crear'} préstamo de ${money(p.principal)} a ${desc} para ${c.name}?\n\nEl cliente recibe en mano: ${money(cash)}${p.fee ? ` (contrato ${money(p.fee)})` : ''}${renew ? ` (se descontó lo que debía: ${money(carried)})` : ''}`)) return;
     const base = {
       clientId: c.id, clientName: c.name, clientPhone: c.phone || '', collectorId: c.collectorId || me.uid,
       type: p.type, principal: p.principal, startDate: p.start, mora: p.mora,
@@ -1229,12 +1259,13 @@ function loanForm(c, opts = {}) {
       accruedInterest: 0, accruedMora: 0, lastCalcDate: p.start, lastPaymentDate: null, lastPaymentId: null,
       totalInterestPaid: 0, totalCapitalPaid: 0, totalMoraPaid: 0, moraPaid: 0, moraWaived: 0,
       status: 'activo', createdBy: me.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      fee: p.fee, feeType: p.feeType, feeValue: p.feeValue, cashGiven: cash,
       ...(renew ? { renewedFrom: renew.id, carriedOver: carried } : {})
     };
     const data = p.type === 'reditos'
       ? { ...base, rateWeekly: p.rateWeekly, capitalBalance: p.principal, termMonths: p.termMonths || 0, maturityDate: p.maturityDate }
       : { ...base, freq: p.freq, n: p.n, ratePeriod: p.ratePeriod, method: p.method, skipSundays: p.skipSundays, capitalBalance: p.principal,
-          termMonths: p.termMonths || 0, interestMode: p.interestMode, interestValue: p.interestValue,
+          termMonths: p.termMonths || 0, interestMode: p.interestMode, interestValue: p.interestValue, renewAt: p.renewAt || 0,
           schedule: buildSchedule({ principal: p.principal, rate: p.ratePeriod, n: p.n, freq: p.freq, method: p.method, start: p.start, skipSundays: p.skipSundays }) };
     const btn = $s('#lsave'); btn.disabled = true;
     try {
@@ -1243,8 +1274,8 @@ function loanForm(c, opts = {}) {
       b.set(ref, data);
       if (renew) b.update(doc(db, 'loans', renew.id), { status: 'renovado', renewedTo: ref.id, renewedAmount: carried, updatedAt: serverTimestamp() });
       await b.commit();
-      if (cash > 0) await cashMove({ type: 'desembolso', amount: cash, uid: me.uid, loanId: ref.id, clientName: c.name, note: renew ? 'Renovación' : 'Préstamo nuevo' });
-      closeModal(); toast(renew ? 'Préstamo renovado' : 'Préstamo creado'); openLoan(ref.id);
+      if (cash > 0) await cashMove({ type: 'desembolso', amount: cash, uid: me.uid, loanId: ref.id, clientName: c.name, note: (renew ? 'Reenganche' : 'Préstamo nuevo') + (p.fee ? ` (contrato ${money(p.fee)} descontado)` : '') });
+      closeModal(); toast(renew ? 'Reenganche hecho' : 'Préstamo creado'); openLoan(ref.id);
     } catch (e) { toast(errMsg(e)); btn.disabled = false; }
   };
 }
@@ -1362,11 +1393,13 @@ async function viewClosed() {
 async function viewReportes(from, to) {
   const today = todayStr();
   from = from || today.slice(0, 8) + '01'; to = to || today;
-  const [ps, ms, ls] = await Promise.all([
+  const [ps, ms, ls, ns] = await Promise.all([
     getDocs(query(collection(db, 'payments'), where('date', '>=', from), where('date', '<=', to))),
     getDocs(query(collection(db, 'cashmoves'), where('date', '>=', from), where('date', '<=', to))),
-    getDocs(query(collection(db, 'loans'), where('status', '==', 'activo')))
+    getDocs(query(collection(db, 'loans'), where('status', '==', 'activo'))),
+    getDocs(query(collection(db, 'loans'), where('startDate', '>=', from), where('startDate', '<=', to)))
   ]);
+  const fees = r2(rows(ns).reduce((t, x) => t + (x.fee || 0), 0));
   const P = rows(ps).filter(p => !p.anulado), M = rows(ms), L = rows(ls);
   const s = (a, k) => r2(a.reduce((t, x) => t + (x[k] || 0), 0));
   const gastos = s(M.filter(m => m.type === 'gasto'), 'amount'), desemb = s(M.filter(m => m.type === 'desembolso'), 'amount');
@@ -1383,8 +1416,9 @@ async function viewReportes(from, to) {
       <div class="stat"><span>Mora cobrada</span><b>${money(mora)}</b></div>
       <div class="stat"><span>Capital recuperado</span><b>${money(s(P, 'toCapital'))}</b></div>
       <div class="stat"><span>Dinero prestado</span><b>${money(desemb)}</b></div>
+      <div class="stat"><span>Gastos de contrato cobrados</span><b>${money(fees)}</b></div>
       <div class="stat"><span>Gastos</span><b>${money(gastos)}</b></div>
-      <div class="stat"><span>Ganancia neta</span><b style="color:var(--green)">${money(interes + mora - gastos)}</b></div>
+      <div class="stat"><span>Ganancia neta</span><b style="color:var(--green)">${money(interes + mora + fees - gastos)}</b></div>
     </div>
     <h3>Cartera hoy</h3>
     <div class="grid">

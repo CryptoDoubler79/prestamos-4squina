@@ -57,12 +57,13 @@ export function buildSchedule({ principal, rate, n, freq, method = 'plano', star
       rows.push({ n: i + 1, due: dates[i], interest, capital, amount: r2(interest + capital), paid: 0 });
     }
   } else {
-    const cap = r2(principal / n), int = r2(principal * rate);
+    const cap = r2(principal / n), int = r2(principal * rate), totalInt = r2(principal * rate * n);
     let left = principal;
     for (let i = 0; i < n; i++) {
       const capital = i === n - 1 ? r2(left) : cap;
+      const interest = i === n - 1 ? r2(totalInt - int * (n - 1)) : int;
       left = r2(left - capital);
-      rows.push({ n: i + 1, due: dates[i], interest: int, capital, amount: r2(int + capital), paid: 0 });
+      rows.push({ n: i + 1, due: dates[i], interest, capital, amount: r2(interest + capital), paid: 0 });
     }
   }
   return rows;
