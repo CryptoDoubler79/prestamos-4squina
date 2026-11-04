@@ -512,7 +512,7 @@ async function openLoan(id) {
     ? [['Lo vencido', st.dueNow], ['Una cuota', nextC ? r2(nextC.amount - nextC.paid + st.moraDue) : 0], ['Saldar todo', st.total]]
     : [['Rédito de hoy', st.dueNow], ['Una semana', r2(st.moraDue + Math.max(0, st.interestRaw) + (st.interestRaw < st.weekly ? st.weekly - Math.max(0, st.interestRaw) : 0))], ['Saldar todo', st.total]];
   const mora = L.mora && L.mora.type && L.mora.type !== 'none'
-    ? `${L.mora.type === 'pct' ? L.mora.value + '% de la cuota' : money(L.mora.value)} por día${L.mora.grace ? `, ${L.mora.grace} días de gracia` : ''}` : 'Sin mora';
+    ? `${L.mora.type === 'pct' ? L.mora.value + (isC ? '% de la cuota' : '% del capital') : money(L.mora.value)} por día${L.mora.grace ? `, ${L.mora.grace} días de gracia` : ''}` : 'Sin mora';
   const sh = openModal(`
     <h2>${esc(L.clientName)} ${stateBadge}</h2>
     <div class="card">
@@ -919,7 +919,7 @@ async function printContract(L) {
   const S = settings;
   const isC = L.type === 'cuotas';
   const moraTxt = L.mora && L.mora.type && L.mora.type !== 'none'
-    ? `En caso de atraso, EL DEUDOR pagará un cargo por mora de ${L.mora.type === 'pct' ? L.mora.value + '% del monto de la cuota vencida' : money(L.mora.value)} por cada día de atraso${L.mora.grace ? `, después de ${L.mora.grace} días de gracia` : ''}.`
+    ? `En caso de atraso, EL DEUDOR pagará un cargo por mora de ${L.mora.type === 'pct' ? L.mora.value + (isC ? '% del monto de la cuota vencida' : '% del capital pendiente') : money(L.mora.value)} por cada día de atraso${L.mora.grace ? `, después de ${L.mora.grace} días de gracia` : ''}.`
     : '';
   const terms = isC
     ? `EL DEUDOR se compromete a pagar dicha suma más los intereses convenidos (${pct(L.ratePeriod)} por cuota, método ${L.method === 'frances' ? 'francés' : 'de interés fijo'}) en ${L.schedule.length} cuotas ${(FREQ[L.freq] || '').toLowerCase()}es${L.termMonths ? ` (plazo de ${L.termMonths} ${L.termMonths === 1 ? 'mes' : 'meses'})` : ''}, según el calendario siguiente, para un total de ${money(L.schedule.reduce((t, x) => t + x.amount, 0))}:`
