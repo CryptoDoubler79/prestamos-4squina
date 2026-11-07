@@ -340,12 +340,14 @@ export function weekDue(L, from, to, asOf = todayStr()) {
     }
     total = r2(overdue + items.reduce((t, x) => t + x.amount, 0) + now.moraDue);
   } else {
-    const end = loanStatus(L, to < asOf ? asOf : to);
-    const interest = end.interestDue;
-    if (interest > 0) items.push({ date: to, label: 'Rédito hasta el ' + to.slice(8, 10) + '/' + to.slice(5, 7), amount: interest, past: false });
+    // Rédito de la semana completa (lunes a domingo, 7 días) + lo pendiente de antes
+    const endInt = loanStatus(L, addDays(to, 1)).interestDue;
+    overdue = r2(Math.min(endInt, loanStatus(L, from).interestDue));
+    const weekInt = r2(endInt - overdue), full = r2(L.capitalBalance * L.rateWeekly);
+    if (weekInt > 0) items.push({ date: to, label: weekInt < full - 0.01 ? 'Rédito de la semana (restante)' : 'Rédito de la semana', amount: weekInt, past: false });
     if (L.maturityDate && L.maturityDate <= to && L.capitalBalance > 0)
       items.push({ date: L.maturityDate, label: 'Capital (vence el plazo)', amount: r2(L.capitalBalance), past: L.maturityDate < asOf });
-    total = r2(items.reduce((t, x) => t + x.amount, 0) + now.moraDue);
+    total = r2(overdue + items.reduce((t, x) => t + x.amount, 0) + now.moraDue);
   }
   return { items, overdue, mora: now.moraDue, total, balance: now.total, credit: now.credit || 0 };
 }

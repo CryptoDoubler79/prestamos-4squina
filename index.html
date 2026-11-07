@@ -80,7 +80,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays } from "./loancalc.js?v=8";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays } from "./loancalc.js?v=9";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -497,7 +497,7 @@ const dayName = s => { const [y, m, d] = s.split('-').map(Number); return DIAS[n
 const short = s => s.slice(8, 10) + '/' + s.slice(5, 7);
 function weekMessage(L, w, from, to) {
   const lines = [`Hola ${L.clientName}, le saluda ${settings.businessName}.`, `Sus pagos de esta semana (${dayName(from)} ${short(from)} al ${dayName(to)} ${short(to)}):`, ''];
-  if (w.overdue > 0) lines.push(`• Atrasado de antes: ${money(w.overdue)}`);
+  if (w.overdue > 0) lines.push(`• Pendiente de antes: ${money(w.overdue)}`);
   for (const it of w.items) lines.push(`• ${L.type === 'cuotas' ? `${dayName(it.date)} ${short(it.date)} — ${it.label}` : it.label}: ${money(it.amount)}${it.past ? ' (vencido)' : ''}`);
   if (w.mora > 0) lines.push(`• Mora: ${money(w.mora)}`);
   lines.push('', `*Total de la semana: ${money(w.total)}*`);
@@ -536,7 +536,7 @@ async function viewSemana(offset = 0) {
         <div class="row"><b>${esc(L.clientName)}</b>${sent[L.id] ? '<span class="badge done">✓ Enviado</span>' : (w.overdue > 0 || w.mora > 0) ? '<span class="badge late">Con atraso</span>' : `<span class="badge">${KLABEL[kind(L)]}</span>`}</div>
         <div class="mute">${esc(typeLabel(L))}${isAdmin() ? ' · ' + esc(collectorName(L.collectorId)) : ''}</div>
         <div style="margin:8px 0;font-size:14px">
-          ${w.overdue > 0 ? `<div class="row"><span style="color:var(--red)">Atrasado de antes</span><b style="color:var(--red)">${money(w.overdue)}</b></div>` : ''}
+          ${w.overdue > 0 ? `<div class="row"><span style="color:var(--red)">Pendiente de antes</span><b style="color:var(--red)">${money(w.overdue)}</b></div>` : ''}
           ${w.items.map(it => `<div class="row"><span>${L.type === 'cuotas' ? dayName(it.date) + ' ' + short(it.date) + ' · ' : ''}${esc(it.label)}${it.past ? ' <span style="color:var(--red)">(vencido)</span>' : ''}</span><span>${money(it.amount)}</span></div>`).join('')}
           ${w.mora > 0 ? `<div class="row"><span style="color:var(--red)">Mora</span><b style="color:var(--red)">${money(w.mora)}</b></div>` : ''}
           <div class="row" style="border-top:1px solid var(--line);margin-top:4px;padding-top:4px"><b>Total semana</b><b>${money(w.total)}</b></div>
