@@ -106,9 +106,14 @@ function reditosStatus(L, asOf) {
   const moraDue = r2((L.accruedMora || 0) + reditosLiveMora(L, asOf));
   const lastPay = L.lastPaymentDate || L.startDate;
   const daysSincePay = Math.max(0, daysBetween(lastPay, asOf));
+  // La semana en curso se cobra completa aunque pague antes del día 7
+  const cycleEnd = nextReditoDue(L, asOf);
+  const rawCycle = reditosRaw(L, cycleEnd);
+  const weekDue = Math.max(0, rawCycle);
   return {
     type: 'reditos', interestDue, interestRaw: raw, credit, moraDue, capital: r2(L.capitalBalance),
-    total: Math.max(0, r2(interestDue + moraDue + L.capitalBalance - credit)),
+    cycleEnd, weekDue,
+    total: Math.max(0, r2(rawCycle + moraDue + L.capitalBalance)),
     creditDays: credit > 0 && L.capitalBalance > 0 ? Math.floor(credit / (L.capitalBalance * L.rateWeekly / 7)) : 0,
     dueNow: r2(interestDue + moraDue),
     daily: r2(L.capitalBalance * L.rateWeekly / 7), weekly: r2(L.capitalBalance * L.rateWeekly),
@@ -165,8 +170,8 @@ function payReditos(L, amount, date, mode = 'normal') {
   let toMora = 0, toInterest = 0, toCapital = 0;
   // Regla: nada va al capital mientras deba interés o mora (sin excepciones)
   if (mode === 'capital') {
-    const owed = r2(st.interestDue + st.moraDue);
-    if (owed > 0) throw new Error('Debe ponerse al día primero: debe RD$' + owed.toFixed(2) + ' de interés/mora. Solo después se puede abonar al capital.');
+    const owed = r2(st.weekDue + st.moraDue);
+    if (owed > 0) throw new Error('Debe ponerse al día primero: debe RD$' + owed.toFixed(2) + ' de rédito de la semana/mora. Solo después se puede abonar al capital.');
     toCapital = r2(Math.min(amount, L.capitalBalance));
     if (r2(amount - toCapital) > 0) throw new Error('El abono excede el capital pendiente (RD$' + r2(L.capitalBalance).toFixed(2) + ')');
   } else if (mode === 'adelanto') {
@@ -175,18 +180,24 @@ function payReditos(L, amount, date, mode = 'normal') {
   } else {
     toMora = r2(Math.min(amount, st.moraDue));
     let rest = r2(amount - toMora);
-    toInterest = r2(Math.min(rest, st.interestDue));
+    toInterest = r2(Math.min(rest, st.weekDue)); // primero el rédito completo de la semana en curso
     rest = r2(rest - toInterest);
     toCapital = r2(Math.min(rest, L.capitalBalance));
     if (r2(rest - toCapital) > 0) throw new Error('El pago excede la deuda total (RD$' + st.total.toFixed(2) + ')');
   }
   const capitalBalance = r2(L.capitalBalance - toCapital);
-  const accruedInterest = r2(st.interestRaw - toInterest);
+  let accruedInterest = r2(st.interestRaw - toInterest);
+  if (toCapital > 0) {
+    // La semana en curso ya quedó pagada con el capital anterior; el capital nuevo cuenta desde la próxima semana
+    const d = Math.max(0, daysBetween(date, st.cycleEnd)), rpd = L.rateWeekly / 7;
+    accruedInterest = r2(accruedInterest + L.capitalBalance * rpd * d - capitalBalance * rpd * d);
+  }
   const accruedMora = r2(st.moraDue - toMora);
   const owedInt = Math.max(0, accruedInterest), credit = Math.max(0, r2(-accruedInterest));
+  const afterSt = reditosStatus({ ...L, capitalBalance, accruedInterest, accruedMora, lastCalcDate: date, lastPaymentDate: date }, date);
   return {
     toMora, toInterest, toCapital, mode, credit,
-    after: { capital: capitalBalance, interest: owedInt, mora: accruedMora, credit, total: Math.max(0, r2(capitalBalance + owedInt + accruedMora - credit)) },
+    after: { capital: capitalBalance, interest: owedInt, mora: accruedMora, credit, total: afterSt.total, weekDue: afterSt.weekDue },
     updates: {
       capitalBalance, accruedInterest, accruedMora, lastCalcDate: date, lastPaymentDate: date,
       totalInterestPaid: r2((L.totalInterestPaid || 0) + toInterest),

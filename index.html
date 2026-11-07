@@ -80,7 +80,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays, nextReditoDue, nextPayment } from "./loancalc.js?v=11";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays, nextReditoDue, nextPayment } from "./loancalc.js?v=12";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -586,7 +586,7 @@ async function openLoan(id) {
   const canRenew = isC && L.renewAt ? st.paidCount >= L.renewAt - 1 : null;
   const chips = isC
     ? [['Lo vencido', st.dueNow], ['Una cuota', nextC ? r2(nextC.amount - nextC.paid + st.moraDue) : 0], ['Saldar todo', st.total]]
-    : [['Rédito de hoy', st.dueNow], ['Una semana', r2(st.moraDue + Math.max(0, st.interestRaw) + (st.interestRaw < st.weekly ? st.weekly - Math.max(0, st.interestRaw) : 0))], ['Saldar todo', st.total]];
+    : [[`Rédito semana (vence ${fdate(st.cycleEnd).slice(0, 5)})`, r2(st.weekDue + st.moraDue)], ['Saldar todo', st.total]];
   const mora = L.mora && L.mora.type && L.mora.type !== 'none'
     ? `${L.mora.type === 'pct' ? L.mora.value + (isC ? '% de la cuota' : '% del capital') : money(L.mora.value)} por día${L.mora.grace ? `, ${L.mora.grace} días de gracia` : ''}` : 'Sin mora';
   const sh = openModal(`
@@ -600,7 +600,7 @@ async function openLoan(id) {
         <div class="row"><span class="mute">Vencido hoy</span><b style="color:var(--red)">${money(st.overdue)}</b></div>
         <div class="row"><span class="mute">Saldo pendiente</span><b>${money(st.balance)}</b></div>`
       : `<div class="row"><span class="mute">Capital pendiente</span><b>${money(st.capital)}</b></div>
-        <div class="row"><span class="mute">Interés pendiente hoy</span><b style="color:var(--red)">${money(st.interestDue)}</b></div>
+        <div class="row"><span class="mute">Rédito de esta semana (vence ${fdate(st.cycleEnd)})</span><b style="color:${st.weekDue > 0 ? 'var(--red)' : 'var(--green)'}">${st.weekDue > 0 ? money(st.weekDue) : 'Pagado ✓'}</b></div>
         ${st.credit > 0 ? `<div class="row"><span class="mute">Réditos adelantados</span><b style="color:var(--green)">${money(st.credit)} (cubre ${st.creditDays} días)</b></div>` : ''}
         <div class="row"><span class="mute">Interés por día / semana</span><b>${money(st.daily)} / ${money(st.weekly)}</b></div>
         ${active ? `<div class="row"><span class="mute">Próximo rédito vence</span><b>${(d => DIAS[new Date(d + 'T12:00:00').getDay()] + ' ' + fdate(d))(nextReditoDue(L))}</b></div>` : ''}
