@@ -340,14 +340,31 @@ export function weekDue(L, from, to, asOf = todayStr()) {
     }
     total = r2(overdue + items.reduce((t, x) => t + x.amount, 0) + now.moraDue);
   } else {
-    // Rédito de la semana completa (lunes a domingo, 7 días) + lo pendiente de antes
-    const endInt = loanStatus(L, addDays(to, 1)).interestDue;
-    overdue = r2(Math.min(endInt, loanStatus(L, from).interestDue));
-    const weekInt = r2(endInt - overdue), full = r2(L.capitalBalance * L.rateWeekly);
-    if (weekInt > 0) items.push({ date: to, label: weekInt < full - 0.01 ? 'Rédito de la semana (restante)' : 'Rédito de la semana', amount: weekInt, past: false });
+    // El rédito vence el día 7 de cada semana del préstamo (contando desde la fecha de entrega)
+    const due = reditoDueIn(L, from, to);
+    if (due) {
+      const endInt = loanStatus(L, due).interestDue;
+      const prev = addDays(due, -7);
+      overdue = r2(Math.min(endInt, prev > L.startDate ? loanStatus(L, prev).interestDue : 0));
+      const weekInt = r2(endInt - overdue), full = r2(L.capitalBalance * L.rateWeekly);
+      if (weekInt > 0) items.push({ date: due, label: weekInt < full - 0.01 ? 'Rédito de la semana (restante)' : 'Rédito de la semana', amount: weekInt, past: due < asOf });
+    } else {
+      overdue = r2(loanStatus(L, from).interestDue > 0 && L.startDate < from ? loanStatus(L, from).interestDue : 0);
+    }
     if (L.maturityDate && L.maturityDate <= to && L.capitalBalance > 0)
       items.push({ date: L.maturityDate, label: 'Capital (vence el plazo)', amount: r2(L.capitalBalance), past: L.maturityDate < asOf });
     total = r2(overdue + items.reduce((t, x) => t + x.amount, 0) + now.moraDue);
   }
   return { items, overdue, mora: now.moraDue, total, balance: now.total, credit: now.credit || 0 };
+}
+
+// Fecha en que vence el rédito dentro de [from, to]: inicio + 7, +14, ...
+export function reditoDueIn(L, from, to) {
+  const k = Math.max(1, Math.ceil(daysBetween(L.startDate, from) / 7));
+  const d = addDays(L.startDate, 7 * k);
+  return d >= from && d <= to ? d : null;
+}
+export function nextReditoDue(L, asOf = todayStr()) {
+  const k = Math.max(1, Math.ceil(daysBetween(L.startDate, asOf) / 7));
+  return addDays(L.startDate, 7 * k);
 }

@@ -80,7 +80,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays } from "./loancalc.js?v=9";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays, nextReditoDue } from "./loancalc.js?v=10";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -498,10 +498,11 @@ const short = s => s.slice(8, 10) + '/' + s.slice(5, 7);
 function weekMessage(L, w, from, to) {
   const lines = [`Hola ${L.clientName}, le saluda ${settings.businessName}.`, `Sus pagos de esta semana (${dayName(from)} ${short(from)} al ${dayName(to)} ${short(to)}):`, ''];
   if (w.overdue > 0) lines.push(`• Pendiente de antes: ${money(w.overdue)}`);
-  for (const it of w.items) lines.push(`• ${L.type === 'cuotas' ? `${dayName(it.date)} ${short(it.date)} — ${it.label}` : it.label}: ${money(it.amount)}${it.past ? ' (vencido)' : ''}`);
+  for (const it of w.items) lines.push(`• ${L.type === 'cuotas' ? `${dayName(it.date)} ${short(it.date)} — ${it.label}` : `${it.label} (vence ${dayName(it.date)} ${short(it.date)})`}: ${money(it.amount)}${it.past ? ' (vencido)' : ''}`);
   if (w.mora > 0) lines.push(`• Mora: ${money(w.mora)}`);
   lines.push('', `*Total de la semana: ${money(w.total)}*`);
-  lines.push(`Saldo total del préstamo hoy: ${money(w.balance)}`);
+  if (L.type === 'cuotas') lines.push(`Saldo total del préstamo hoy: ${money(w.balance)}`);
+  else lines.push('', `Este pago es solo el rédito (interés). Su capital de *${money(L.capitalBalance)}* sigue igual hasta que haga un abono a capital.`);
   if (w.credit > 0) lines.push(`Tiene a favor (adelantado): ${money(w.credit)}`);
   lines.push('', 'Puede pagar por adelantado si le conviene. ¡Gracias por su puntualidad!');
   return lines.join('\n');
@@ -537,9 +538,10 @@ async function viewSemana(offset = 0) {
         <div class="mute">${esc(typeLabel(L))}${isAdmin() ? ' · ' + esc(collectorName(L.collectorId)) : ''}</div>
         <div style="margin:8px 0;font-size:14px">
           ${w.overdue > 0 ? `<div class="row"><span style="color:var(--red)">Pendiente de antes</span><b style="color:var(--red)">${money(w.overdue)}</b></div>` : ''}
-          ${w.items.map(it => `<div class="row"><span>${L.type === 'cuotas' ? dayName(it.date) + ' ' + short(it.date) + ' · ' : ''}${esc(it.label)}${it.past ? ' <span style="color:var(--red)">(vencido)</span>' : ''}</span><span>${money(it.amount)}</span></div>`).join('')}
+          ${w.items.map(it => `<div class="row"><span>${dayName(it.date) + ' ' + short(it.date) + ' · '}${esc(it.label)}${it.past ? ' <span style="color:var(--red)">(vencido)</span>' : ''}</span><span>${money(it.amount)}</span></div>`).join('')}
           ${w.mora > 0 ? `<div class="row"><span style="color:var(--red)">Mora</span><b style="color:var(--red)">${money(w.mora)}</b></div>` : ''}
           <div class="row" style="border-top:1px solid var(--line);margin-top:4px;padding-top:4px"><b>Total semana</b><b>${money(w.total)}</b></div>
+          ${L.type === 'cuotas' ? '' : `<div class="mute" style="margin-top:4px">Solo rédito. Capital sigue en ${money(L.capitalBalance)}.</div>`}
         </div>
         <div class="btns">
           ${L.clientPhone ? `<a class="btn" style="text-align:center;text-decoration:none" target="_blank" data-send="${L.id}" href="${waLink(L.clientPhone, weekMessage(L, w, from, to))}">📲 Enviar</a>` : '<span class="mute" style="flex:1">Sin teléfono registrado</span>'}
@@ -599,6 +601,7 @@ async function openLoan(id) {
         <div class="row"><span class="mute">Interés pendiente hoy</span><b style="color:var(--red)">${money(st.interestDue)}</b></div>
         ${st.credit > 0 ? `<div class="row"><span class="mute">Réditos adelantados</span><b style="color:var(--green)">${money(st.credit)} (cubre ${st.creditDays} días)</b></div>` : ''}
         <div class="row"><span class="mute">Interés por día / semana</span><b>${money(st.daily)} / ${money(st.weekly)}</b></div>
+        ${active ? `<div class="row"><span class="mute">Próximo rédito vence</span><b>${(d => DIAS[new Date(d + 'T12:00:00').getDay()] + ' ' + fdate(d))(nextReditoDue(L))}</b></div>` : ''}
         ${L.maturityDate ? `<div class="row"><span class="mute">Capital vence</span><b style="color:${st.matured ? 'var(--red)' : 'inherit'}">${fdate(L.maturityDate)}${st.matured ? ' (VENCIDO)' : st.daysToMaturity !== null && st.daysToMaturity <= 7 ? ` (en ${st.daysToMaturity} días)` : ''}</b></div>` : ''}`}
       <div class="row"><span class="mute">Mora pendiente</span><b style="color:${st.moraDue > 0 ? 'var(--red)' : 'inherit'}">${money(st.moraDue)}</b></div>
       <div class="row"><span class="mute">Total para saldar hoy</span><b>${money(st.total)}</b></div>
@@ -998,7 +1001,7 @@ async function printContract(L) {
     : '';
   const terms = isC
     ? `EL DEUDOR se compromete a pagar dicha suma más los intereses convenidos (${pct(L.ratePeriod)} por cuota, método ${L.method === 'frances' ? 'francés' : 'de interés fijo'}) en ${L.schedule.length} cuotas ${(FREQ[L.freq] || '').toLowerCase()}es${loanTerm(L) ? ` (plazo de ${termLabel(loanTerm(L))})` : ''}, según el calendario siguiente, para un total de ${money(L.schedule.reduce((t, x) => t + x.amount, 0))}:`
-    : `EL DEUDOR pagará un interés de ${pct(L.rateWeekly)} semanal sobre el capital pendiente, calculado por día, pudiendo abonar al capital en cualquier momento. ${L.maturityDate ? `El capital será devuelto a más tardar el <b>${fdate(L.maturityDate)}</b> ${loanTerm(L) ? `(plazo de ${termLabel(loanTerm(L))})` : ''}.` : 'El capital será devuelto en la fecha que acuerden las partes o a simple requerimiento de EL ACREEDOR con aviso de treinta (30) días.'}`;
+    : `EL DEUDOR pagará un interés de ${pct(L.rateWeekly)} semanal sobre el capital pendiente, calculado por día y pagadero cada siete (7) días contados desde la fecha de entrega, pudiendo abonar al capital en cualquier momento. ${L.maturityDate ? `El capital será devuelto a más tardar el <b>${fdate(L.maturityDate)}</b> ${loanTerm(L) ? `(plazo de ${termLabel(loanTerm(L))})` : ''}.` : 'El capital será devuelto en la fecha que acuerden las partes o a simple requerimiento de EL ACREEDOR con aviso de treinta (30) días.'}`;
   printHtml('Contrato de préstamo', `
     <h1>CONTRATO DE PRÉSTAMO Y PAGARÉ</h1>
     <p>En ${esc(S.city || '__________')}, República Dominicana, a los ${fdate(L.startDate)}.</p>
