@@ -76,11 +76,27 @@ window.addEventListener('error',function(e){if(!window.__ok)__diag('Error: '+(e.
 window.addEventListener('unhandledrejection',function(e){if(!window.__ok)__diag('Error: '+(e.reason&&(e.reason.code||e.reason.message)||e.reason))});
 setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+window.__stage):'La app no pudo descargar sus archivos. Revisa el internet, o abre el enlace en Safari/Chrome (no dentro de otra app).')},15000);
 </script>
+<script>
+// Busca versión nueva y recarga sola (evita que el teléfono muestre una copia vieja)
+window.APP_VERSION = '202611072014';
+(function () {
+  function check() {
+    fetch('version.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json()).then(j => {
+      if (j && j.v && j.v !== window.APP_VERSION) {
+        var u = new URL(location.href); u.searchParams.set('v', j.v); location.replace(u.toString());
+      }
+    }).catch(function () {});
+  }
+  check();
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) check(); });
+  setInterval(check, 5 * 60 * 1000);
+})();
+</script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays, nextReditoDue, nextPayment } from "./loancalc.js?v=12";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays, nextReditoDue, nextPayment } from "./loancalc.js?v=202611072014";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
