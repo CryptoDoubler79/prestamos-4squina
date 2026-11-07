@@ -355,7 +355,7 @@ export function weekDue(L, from, to, asOf = todayStr()) {
       items.push({ date: L.maturityDate, label: 'Capital (vence el plazo)', amount: r2(L.capitalBalance), past: L.maturityDate < asOf });
     total = r2(overdue + items.reduce((t, x) => t + x.amount, 0) + now.moraDue);
   }
-  return { items, overdue, mora: now.moraDue, total, balance: now.total, credit: now.credit || 0 };
+  return { items, overdue, mora: now.moraDue, total, balance: now.total, credit: now.credit || 0, capital: now.capital };
 }
 
 // Fecha en que vence el rédito dentro de [from, to]: inicio + 7, +14, ...
@@ -367,4 +367,22 @@ export function reditoDueIn(L, from, to) {
 export function nextReditoDue(L, asOf = todayStr()) {
   const k = Math.max(1, Math.ceil(daysBetween(L.startDate, asOf) / 7));
   return addDays(L.startDate, 7 * k);
+}
+
+// Próximo pago después de registrar un pago (para el recibo)
+export function nextPayment(L, asOf = todayStr()) {
+  if (L.status && L.status !== 'activo') return null;
+  if (L.type === 'cuotas') {
+    const c = L.schedule.find(x => r2(x.amount - x.paid) > 0.004);
+    return c ? { date: c.due, amount: r2(c.amount - c.paid), label: `Cuota ${c.n}/${L.schedule.length}` } : null;
+  }
+  if (!(L.capitalBalance > 0)) return null;
+  let d = nextReditoDue(L, asOf);
+  for (let i = 0; i < 60; i++) {
+    const s = loanStatus(L, d);
+    const amt = r2(s.interestDue + s.moraDue);
+    if (amt > 0.004 && d >= asOf) return { date: d, amount: amt, label: 'Rédito' };
+    d = addDays(d, 7);
+  }
+  return null;
 }
