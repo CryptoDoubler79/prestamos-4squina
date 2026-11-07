@@ -319,3 +319,33 @@ export function cuotasUntil(start, freq, end, skipSundays = false) {
   }
   return Math.max(1, n);
 }
+
+// ---------- resumen de la semana (recordatorios) ----------
+export function weekRange(asOf = todayStr()) {
+  const d = dow(asOf), back = (d + 6) % 7; // lunes = inicio
+  const from = addDays(asOf, -back);
+  return { from, to: addDays(from, 6) };
+}
+// Lo que el cliente debe pagar para estar al día al final de la semana [from, to]
+export function weekDue(L, from, to, asOf = todayStr()) {
+  const now = loanStatus(L, asOf);
+  const items = [];
+  let overdue = 0, total = 0;
+  if (L.type === 'cuotas') {
+    for (const c of L.schedule) {
+      const rem = r2(c.amount - c.paid);
+      if (rem <= 0.004) continue;
+      if (c.due < from) overdue = r2(overdue + rem);
+      else if (c.due <= to) items.push({ date: c.due, label: `Cuota ${c.n}/${L.schedule.length}`, amount: rem, past: c.due < asOf });
+    }
+    total = r2(overdue + items.reduce((t, x) => t + x.amount, 0) + now.moraDue);
+  } else {
+    const end = loanStatus(L, to < asOf ? asOf : to);
+    const interest = end.interestDue;
+    if (interest > 0) items.push({ date: to, label: 'Rédito hasta el ' + to.slice(8, 10) + '/' + to.slice(5, 7), amount: interest, past: false });
+    if (L.maturityDate && L.maturityDate <= to && L.capitalBalance > 0)
+      items.push({ date: L.maturityDate, label: 'Capital (vence el plazo)', amount: r2(L.capitalBalance), past: L.maturityDate < asOf });
+    total = r2(items.reduce((t, x) => t + x.amount, 0) + now.moraDue);
+  }
+  return { items, overdue, mora: now.moraDue, total, balance: now.total, credit: now.credit || 0 };
+}

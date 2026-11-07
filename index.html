@@ -80,7 +80,7 @@ setTimeout(function(){if(!window.__ok)__diag(window.__stage?('Se quedó en: '+wi
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, query, where, runTransaction, serverTimestamp, writeBatch, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil } from "./loancalc.js?v=7";
+import { r2, todayStr, daysBetween, addMonths, loanStatus, applyPayment, buildSchedule, FREQ, waiveMora, postponeCuotas, extendReditos, validCedula, PAY_FIELDS, PAY_MODES, ratePerCuota, monthlyToPeriod, termEnd, termMonthsOf, termLabel, cuotasUntil, weekRange, weekDue, addDays } from "./loancalc.js?v=8";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA5CFaY8Gsx3YlWf4UzVYFDxGHq66flRVU",
@@ -465,7 +465,7 @@ async function viewCobros() {
   const loans = rows(await getDocs(qLoansActive())).map(L => ({ ...L, st: loanStatus(L, today) }));
   loans.sort((a, b) => (b.st.late - a.st.late) || (b.st.daysLate - a.st.daysLate) || (b.st.dueNow - a.st.dueNow));
   let filter = 'hoy';
-  view.innerHTML = `<h2>Cobros</h2>
+  view.innerHTML = `<div class="row"><h2>Cobros</h2><button class="btn sm" id="goWeek">📅 Recordatorios</button></div>
     <div class="chips"><button class="chip on" data-f="hoy">Para cobrar</button><button class="chip" data-f="late">Atrasados</button><button class="chip" data-f="all">Todos</button></div>
     <input id="q" placeholder="Buscar cliente…"><div id="list"></div>`;
   const draw = () => {
@@ -488,6 +488,75 @@ async function viewCobros() {
   };
   view.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; view.querySelectorAll('[data-f]').forEach(x => x.classList.toggle('on', x === b)); draw(); });
   $('#q').oninput = draw; draw();
+  $('#goWeek').onclick = () => viewSemana().catch(e => toast(errMsg(e)));
+}
+
+// ---------- RECORDATORIOS DE LA SEMANA ----------
+const DIAS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+const dayName = s => { const [y, m, d] = s.split('-').map(Number); return DIAS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]; };
+const short = s => s.slice(8, 10) + '/' + s.slice(5, 7);
+function weekMessage(L, w, from, to) {
+  const lines = [`Hola ${L.clientName}, le saluda ${settings.businessName}.`, `Sus pagos de esta semana (${dayName(from)} ${short(from)} al ${dayName(to)} ${short(to)}):`, ''];
+  if (w.overdue > 0) lines.push(`• Atrasado de antes: ${money(w.overdue)}`);
+  for (const it of w.items) lines.push(`• ${L.type === 'cuotas' ? `${dayName(it.date)} ${short(it.date)} — ${it.label}` : it.label}: ${money(it.amount)}${it.past ? ' (vencido)' : ''}`);
+  if (w.mora > 0) lines.push(`• Mora: ${money(w.mora)}`);
+  lines.push('', `*Total de la semana: ${money(w.total)}*`);
+  lines.push(`Saldo total del préstamo hoy: ${money(w.balance)}`);
+  if (w.credit > 0) lines.push(`Tiene a favor (adelantado): ${money(w.credit)}`);
+  lines.push('', 'Puede pagar por adelantado si le conviene. ¡Gracias por su puntualidad!');
+  return lines.join('\n');
+}
+let weekFreq = 'all';
+async function viewSemana(offset = 0) {
+  const today = todayStr();
+  const base = weekRange(today);
+  const from = addDays(base.from, offset * 7), to = addDays(base.to, offset * 7);
+  const loans = rows(await getDocs(qLoansActive()));
+  let sentKey = 'remSent_' + from, sent = {};
+  try { sent = JSON.parse(localStorage.getItem(sentKey) || '{}'); } catch (_) {}
+  const kind = L => L.type === 'cuotas' ? L.freq : 'reditos';
+  const KLABEL = { all: 'Todos', diario: 'Diarios', semanal: 'Semanales', quincenal: 'Quincenales', mensual: 'Mensuales', reditos: 'Réditos' };
+  const list = loans.map(L => ({ L, w: weekDue(L, from, to, today) })).filter(x => x.w.total > 0)
+    .sort((a, b) => (b.w.overdue + b.w.mora) - (a.w.overdue + a.w.mora) || b.w.total - a.w.total);
+  const counts = {}; list.forEach(x => { counts[kind(x.L)] = (counts[kind(x.L)] || 0) + 1; });
+  const draw = () => {
+    const shown = list.filter(x => weekFreq === 'all' || kind(x.L) === weekFreq);
+    const tot = r2(shown.reduce((t, x) => t + x.w.total, 0));
+    const nSent = shown.filter(x => sent[x.L.id]).length;
+    view.innerHTML = `<button class="btn sec sm" id="back">← Cobros</button>
+      <h2>Recordatorios de la semana</h2>
+      <div class="row"><button class="btn sec sm" id="wPrev">‹ Anterior</button><b>${dayName(from)} ${short(from)} – ${dayName(to)} ${short(to)}</b><button class="btn sec sm" id="wNext">Siguiente ›</button></div>
+      <div class="chips" style="flex-wrap:wrap;margin-top:10px">${Object.keys(KLABEL).filter(k => k === 'all' || counts[k]).map(k => `<button class="chip ${weekFreq === k ? 'on' : ''}" data-k="${k}" style="flex:0 0 auto;padding:8px 12px">${KLABEL[k]}${k === 'all' ? '' : ' (' + counts[k] + ')'}</button>`).join('')}</div>
+      <div class="grid">
+        <div class="stat"><span>Por cobrar esta semana</span><b>${money(tot)}</b></div>
+        <div class="stat"><span>Recordatorios enviados</span><b>${nSent} de ${shown.length}</b></div>
+      </div>
+      <p class="mute">Toca "Enviar" en cada cliente: se abre WhatsApp con el resumen listo. Al volver, pasa al siguiente.</p>
+      ${shown.length ? shown.map(({ L, w }) => `<div class="card">
+        <div class="row"><b>${esc(L.clientName)}</b>${sent[L.id] ? '<span class="badge done">✓ Enviado</span>' : (w.overdue > 0 || w.mora > 0) ? '<span class="badge late">Con atraso</span>' : `<span class="badge">${KLABEL[kind(L)]}</span>`}</div>
+        <div class="mute">${esc(typeLabel(L))}${isAdmin() ? ' · ' + esc(collectorName(L.collectorId)) : ''}</div>
+        <div style="margin:8px 0;font-size:14px">
+          ${w.overdue > 0 ? `<div class="row"><span style="color:var(--red)">Atrasado de antes</span><b style="color:var(--red)">${money(w.overdue)}</b></div>` : ''}
+          ${w.items.map(it => `<div class="row"><span>${L.type === 'cuotas' ? dayName(it.date) + ' ' + short(it.date) + ' · ' : ''}${esc(it.label)}${it.past ? ' <span style="color:var(--red)">(vencido)</span>' : ''}</span><span>${money(it.amount)}</span></div>`).join('')}
+          ${w.mora > 0 ? `<div class="row"><span style="color:var(--red)">Mora</span><b style="color:var(--red)">${money(w.mora)}</b></div>` : ''}
+          <div class="row" style="border-top:1px solid var(--line);margin-top:4px;padding-top:4px"><b>Total semana</b><b>${money(w.total)}</b></div>
+        </div>
+        <div class="btns">
+          ${L.clientPhone ? `<a class="btn" style="text-align:center;text-decoration:none" target="_blank" data-send="${L.id}" href="${waLink(L.clientPhone, weekMessage(L, w, from, to))}">📲 Enviar</a>` : '<span class="mute" style="flex:1">Sin teléfono registrado</span>'}
+          <button class="btn sec" data-open="${L.id}">Ver</button>
+        </div></div>`).join('') : '<div class="empty">Nadie tiene pagos pendientes esta semana.</div>'}`;
+    $('#back').onclick = () => go('cobros');
+    $('#wPrev').onclick = () => viewSemana(offset - 1).catch(e => toast(errMsg(e)));
+    $('#wNext').onclick = () => viewSemana(offset + 1).catch(e => toast(errMsg(e)));
+    view.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { weekFreq = b.dataset.k; draw(); });
+    view.querySelectorAll('[data-open]').forEach(b => b.onclick = () => openLoan(b.dataset.open));
+    view.querySelectorAll('[data-send]').forEach(a => a.addEventListener('click', () => {
+      sent[a.dataset.send] = Date.now();
+      try { localStorage.setItem(sentKey, JSON.stringify(sent)); } catch (_) {}
+      setTimeout(draw, 300);
+    }));
+  };
+  draw();
 }
 
 // ---------- PRÉSTAMO ----------
@@ -578,7 +647,7 @@ async function openLoan(id) {
   loadPhoto('g_' + id).then(src => { const g = sh.querySelector('#gphoto'); if (src && g) g.innerHTML = `<img src="${src}" style="width:100%;border-radius:10px;margin-top:8px">`; });
   // Recordatorio
   const rem = sh.querySelector('#lrem');
-  if (rem) rem.href = waLink(L.clientPhone, `Hola ${L.clientName}, le saluda ${settings.businessName}. Le recordamos su pago pendiente de ${money(st.dueNow)}${st.moraDue > 0 ? ` (incluye mora de ${money(st.moraDue)})` : ''}. Saldo total: ${money(st.total)}. ¡Gracias!`);
+  if (rem) { const wr = weekRange(); rem.href = waLink(L.clientPhone, weekMessage(L, weekDue(L, wr.from, wr.to), wr.from, wr.to)); }
   sh.querySelector('#lcontract').onclick = () => printContract(L);
   if (active) {
     const amt = sh.querySelector('#pamt'), split = sh.querySelector('#psplit');
